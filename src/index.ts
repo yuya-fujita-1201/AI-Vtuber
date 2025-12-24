@@ -1,0 +1,106 @@
+import 'dotenv/config';
+import { FileReplayAdapter, FileReplayAdapterConfig } from './adapters/FileReplayAdapter';
+import { YouTubeLiveAdapter, YouTubeLiveAdapterConfig } from './adapters/YouTubeLiveAdapter';
+import { ChatMessage, IChatAdapter } from './interfaces';
+
+type AdapterSetup = {
+  adapter: IChatAdapter;
+  config: FileReplayAdapterConfig | YouTubeLiveAdapterConfig;
+  label: string;
+};
+
+const adapterType = (process.env.CHAT_ADAPTER ?? 'MOCK').toUpperCase();
+
+const setupAdapter = (): AdapterSetup => {
+  if (adapterType === 'YOUTUBE') {
+    const apiKey = process.env.YOUTUBE_API_KEY ?? '';
+    const videoId = process.env.YOUTUBE_VIDEO_ID;
+    const liveChatId = process.env.YOUTUBE_LIVE_CHAT_ID;
+    const pollingInterval = toNumber(process.env.YOUTUBE_POLLING_INTERVAL, 1000);
+
+    if (!apiKey) {
+      throw new Error('YOUTUBE_API_KEY is required for YOUTUBE adapter');
+    }
+
+    return {
+      adapter: new YouTubeLiveAdapter(),
+      config: { apiKey, videoId, liveChatId, pollingInterval },
+      label: 'YouTubeLiveAdapter'
+    };
+  }
+
+  const filePath = process.env.MOCK_FILE_PATH ?? '';
+  const pollingInterval = toNumber(process.env.MOCK_POLLING_INTERVAL, 1000);
+
+  if (!filePath) {
+    throw new Error('MOCK_FILE_PATH is required for MOCK adapter');
+  }
+
+  return {
+    adapter: new FileReplayAdapter(),
+    config: { filePath, pollingInterval },
+    label: 'FileReplayAdapter'
+  };
+};
+
+const formatMessage = (message: ChatMessage): string => {
+  const time = new Date(message.timestamp).toLocaleTimeString('ja-JP', { hour12: false });
+  return `[${time}] ${message.authorName}: ${message.content}`;
+};
+
+const main = async () => {
+  const { adapter, config, label } = setupAdapter();
+  let running = true;
+  let shutdownStarted = false;
+
+  const shutdown = async () => {
+    if (shutdownStarted) {
+      return;
+    }
+    shutdownStarted = true;
+    running = false;
+    console.log('\n[System] Shutting down...');
+    try {
+      await adapter.disconnect();
+    } catch (error) {
+      console.error('[System] Disconnect error', error);
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  await adapter.connect(config);
+  console.log(`[System] Adapter ready: ${label}`);
+
+  while (running) {
+    try {
+      const messages = await adapter.fetchNewMessages();
+      for (const message of messages) {
+        console.log(formatMessage(message));
+      }
+    } catch (error) {
+      console.error('[System] Fetch error', error);
+      await sleep(1000);
+    }
+
+    await sleep(100);
+  }
+};
+
+const toNumber = (value: string | undefined, fallback: number): number => {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+main().catch((error) => {
+  console.error('[System] Fatal error', error);
+  process.exit(1);
+});
