@@ -4,7 +4,7 @@ import { ChatMessage, LLMRequest, TopicState } from '../interfaces';
 
 const DEFAULT_MONOLOGUE_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n視聴者に楽しく、わかりやすく話してください。\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n- 完了したアウトライン:\n{{completedOutline}}\n- 残りのアウトライン:\n{{remainingOutline}}\n\n制約:\n- 1〜3文の自然な独り言で話す\n- 具体例や軽い感想を入れる\n- 口調は配信者らしく、明るく短め\n- 出力は本文のみ`;
 
-const DEFAULT_REPLY_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\nリスナーコメントに対して、明るく丁寧に短く返答してください。\n\n## Listener Comment\n- Author: {{commentAuthor}}\n- Comment: {{commentContent}}\n- Timestamp: {{commentTimestamp}}\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n\n制約:\n- 1〜2文で返答\n- コメントに直接触れる\n- 出力は本文のみ`;
+const DEFAULT_REPLY_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n質問でも雑談でも、リスナーコメントに対して明るく丁寧に短く返答してください。\n\n## Listener Comment\n- Author: {{commentAuthor}}\n- Comment: {{commentContent}}\n- Timestamp: {{commentTimestamp}}\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n\n制約:\n- 1〜2文で返答\n- 質問には簡潔に答え、雑談には相槌や共感を添える\n- コメントに直接触れる\n- 出力は本文のみ`;
 
 export class PromptManager {
     private monologueTemplate: string;
@@ -38,7 +38,7 @@ export class PromptManager {
 
         return {
             systemPrompt,
-            userPrompt: '上の条件に従って、コメントへの返答を生成してください。',
+            userPrompt: '上の条件に従って、質問でも雑談でも自然にコメントへの返答を生成してください。',
             temperature: 0.6,
             maxTokens: 2048
         };
