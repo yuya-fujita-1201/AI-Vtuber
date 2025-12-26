@@ -1,19 +1,32 @@
-import { IChatAdapter, SpeechTask, CommentType } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
+import { OpenAIService } from '../services/OpenAIService';
+import { PromptManager } from './PromptManager';
 
 export class Agent {
     private adapter: IChatAdapter;
     private spine: TopicSpine;
     private router: CommentRouter;
+    private llm: ILLMService;
+    private promptManager: PromptManager;
     private speechQueue: SpeechTask[] = [];
 
     private isRunning: boolean = false;
+    private isGeneratingMonologue: boolean = false;
+    private lastMonologueAt: number = 0;
+    private readonly monologueIntervalMs: number = 10_000;
 
-    constructor(adapter: IChatAdapter) {
+    constructor(
+        adapter: IChatAdapter,
+        llmService: ILLMService = new OpenAIService(),
+        promptManager: PromptManager = new PromptManager()
+    ) {
         this.adapter = adapter;
         this.spine = new TopicSpine();
         this.router = new CommentRouter();
+        this.llm = llmService;
+        this.promptManager = promptManager;
     }
 
     public async start() {
@@ -44,7 +57,7 @@ export class Agent {
 
             switch (type) {
                 case CommentType.ON_TOPIC:
-                    responseText = `返答: ${msg.content} ですね`;
+                    responseText = await this.generateReply(msg);
                     priority = 'HIGH';
                     break;
                 case CommentType.REACTION:
@@ -68,10 +81,7 @@ export class Agent {
 
         // 3. 自発発話 (Queueが空で、コメントもなかった場合など -> 今回はQueue空なら発話)
         if (this.speechQueue.length === 0 && newMessages.length === 0) {
-            const nextSection = this.spine.getNextSection();
-            if (nextSection) {
-                this.enqueueSpeech(`[本線] 次は「${nextSection}」について話します`, 'NORMAL');
-            }
+            await this.maybeGenerateMonologue();
         }
 
         // 4. 出力処理 (Queueから取り出して実行)
@@ -106,5 +116,35 @@ export class Agent {
 
     private sleep(ms: number) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    private async generateReply(msg: ChatMessage) {
+        const prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
+        const text = await this.llm.generateText(prompt);
+        return text.trim();
+    }
+
+    private async maybeGenerateMonologue(): Promise<void> {
+        if (this.isGeneratingMonologue) return;
+
+        const now = Date.now();
+        if (now - this.lastMonologueAt < this.monologueIntervalMs) return;
+
+        const currentState = this.spine.currentState;
+        const currentSection = currentState.outline[currentState.currentSectionIndex];
+        if (!currentSection) return;
+
+        this.isGeneratingMonologue = true;
+        try {
+            const prompt = this.promptManager.buildMonologuePrompt(currentState);
+            const text = await this.llm.generateText(prompt);
+            if (text.trim()) {
+                this.enqueueSpeech(text, 'NORMAL');
+                this.spine.getNextSection();
+            }
+            this.lastMonologueAt = Date.now();
+        } finally {
+            this.isGeneratingMonologue = false;
+        }
     }
 }
