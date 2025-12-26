@@ -1,7 +1,47 @@
 # Verification Checklist (Day 5)
 
-- [ ] Connect to YouTube Live with `CHAT_ADAPTER=YOUTUBE` and confirm comments are received.
-- [ ] Post comment "こんにちは" and confirm a spoken response is played.
-- [ ] Post comment "草" and confirm a reaction response is played.
-- [ ] Leave the stream idle and confirm the agent produces a monologue.
-- [ ] Stop the VOICEVOX Engine and confirm the process does not crash (errors should be logged, loop continues).
+動作確認手順の詳細です。テストを実施する前に、ターミナルで `VOICEVOX` が起動していることを確認してください。
+
+## 1. YouTube Live接続テスト (またはMockテスト)
+- [ ] **設定**: `.env` で `CHAT_ADAPTER=MOCK` に設定されていることを確認してください（YouTube接続テストを行う場合は `YOUTUBE` に変更し、APIキー等を設定）。
+- [ ] **実行**: ターミナルで `npm run dev` を実行します。
+- [ ] **確認**: ログに `[System] Adapter ready: FileReplayAdapter` (YouTubeの場合は `YouTubeLiveAdapter`) と表示されればOKです。
+
+## 2. コメント返信テスト
+- [ ] **準備**: `mocks/replay.json` (または `mocks/sample.json`) を開き、以下のようなデータを追記・保存します。
+    ```json
+    [
+      { "id": "test-1", "authorName": "Tester", "content": "こんにちは", "timestamp": 1234567890 }
+    ]
+    ```
+    ※ mockの場合、保存するとファイル変更検知またはポーリングで読み込まれます。
+- [ ] **確認**:
+    1. コンソールに `[SPEAK] 返答: こんにちは ですね` (の類) が表示されること。
+    2. 同時に、**音声が再生されること**。
+
+## 3. リアクションテスト
+- [ ] **準備**: `mocks/replay.json` に以下を追記します。
+    ```json
+    [
+      { "id": "test-2", "authorName": "Tester", "content": "草", "timestamp": 1234567900 }
+    ]
+    ```
+- [ ] **確認**:
+    1. コンソールに `[SPEAK] （リアクションありがとうございます！）` が表示されること。
+    2. 音声が再生されること。
+
+## 4. 独り言（Monologue）テスト
+- [ ] **実行**: アプリを起動したまま、コメントを何も送らずに10秒〜20秒ほど放置します。
+- [ ] **確認**:
+    1. コンソールに `[SPEAK] [本線] ...` という形式の独り言が表示されること。
+    2. 音声が再生されること。
+    3. その後も、放置している限り定期的に独り言を話し続けること。
+
+## 5. 耐障害性テスト (VOICEVOX停止)
+- [ ] **実行**:
+    1. アプリ実行中に、VOICEVOXエディタを終了させます。
+    2. 適当なコメント（例: "テスト"）を `mocks/replay.json` に追記します。
+- [ ] **確認**:
+    1. コンソールに `[Agent] TTS synthesize failed` 等のエラーログが出ることを確認。
+    2. **アプリがクラッシュせずに稼働し続けていること**を確認。
+- [ ] **復帰**: VOICEVOXエディタを再度起動し、次のコメントを送ると音声が再び流れることを確認できれば完璧です。

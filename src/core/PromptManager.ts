@@ -23,7 +23,7 @@ export class PromptManager {
             systemPrompt,
             userPrompt: '上の条件に従って、今のセクションについて独り言を生成してください。',
             temperature: 0.7,
-            maxTokens: 220
+            maxTokens: 2048
         };
     }
 
@@ -40,7 +40,7 @@ export class PromptManager {
             systemPrompt,
             userPrompt: '上の条件に従って、コメントへの返答を生成してください。',
             temperature: 0.6,
-            maxTokens: 200
+            maxTokens: 2048
         };
     }
 

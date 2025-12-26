@@ -41,22 +41,23 @@ export class OpenAIService implements ILLMService {
                     { role: 'system', content: req.systemPrompt ?? '' },
                     { role: 'user', content: req.userPrompt ?? '' }
                 ],
-                temperature: req.temperature ?? 0.7,
-                max_tokens: req.maxTokens ?? 256,
+                temperature: 1,
+                max_completion_tokens: req.maxTokens ?? 1024,
                 top_p: req.topP,
                 presence_penalty: req.presencePenalty,
                 frequency_penalty: req.frequencyPenalty
             });
+            // console.log('[OpenAIService] Response:', JSON.stringify(response, null, 2)); // Debug log
 
             const text = response.choices?.[0]?.message?.content?.trim();
             if (!text) {
-                console.warn('[OpenAIService] Empty completion received.');
+                console.warn('[OpenAIService] Empty completion received. Full Response:', JSON.stringify(response, null, 2));
                 return this.fallbackText;
             }
 
             return text;
-        } catch (error) {
-            console.error('[OpenAIService] generateText failed', error);
+        } catch (error: any) {
+            console.error('[OpenAIService] generateText failed', error.response?.data || error.message);
             return this.fallbackText;
         }
     }
