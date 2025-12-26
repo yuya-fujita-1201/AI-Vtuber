@@ -20,6 +20,10 @@ export class Agent {
     private isGeneratingMonologue: boolean = false;
     private lastMonologueAt: number = 0;
     private readonly monologueIntervalMs: number = 10_000;
+    private readonly errorCooldownMs: number = 10_000;
+    private readonly isDryRun: boolean;
+    private lastErrorAt: Record<string, number> = {};
+    private suppressedErrors: Record<string, number> = {};
 
     constructor(
         adapter: IChatAdapter,
@@ -35,6 +39,7 @@ export class Agent {
         this.promptManager = promptManager;
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
+        this.isDryRun = parseBoolean(process.env.DRY_RUN);
     }
 
     public async start() {
@@ -42,7 +47,11 @@ export class Agent {
         console.log('[Agent] Started.');
 
         while (this.isRunning) {
-            await this.tick();
+            try {
+                await this.tick();
+            } catch (error) {
+                this.logError('tick', '[Agent] tick failed', error);
+            }
             await this.sleep(1000); // 1秒ごとにループ (簡易実装)
         }
     }
@@ -54,11 +63,23 @@ export class Agent {
 
     private async tick() {
         // 1. 新着コメント取得
-        const newMessages = await this.adapter.fetchNewMessages();
+        let newMessages: ChatMessage[] = [];
+        try {
+            newMessages = await this.adapter.fetchNewMessages();
+        } catch (error) {
+            this.logError('adapter.fetch', '[Agent] fetchNewMessages failed', error);
+            newMessages = [];
+        }
 
         // 2. コメント処理
         for (const msg of newMessages) {
-            const type = await this.router.classify(msg, this.spine.currentState);
+            let type: CommentType = CommentType.IGNORE;
+            try {
+                type = await this.router.classify(msg, this.spine.currentState);
+            } catch (error) {
+                this.logError('router.classify', '[Agent] classify failed', error);
+                continue;
+            }
 
             let responseText = '';
             let priority: 'HIGH' | 'NORMAL' = 'NORMAL';
@@ -117,19 +138,26 @@ export class Agent {
             const task = this.speechQueue.shift();
             if (!task) continue;
 
-            const audioPromise = this.tts.synthesize(task.text);
             console.log(`[SPEAK] ${task.text}`);
 
-            const audioData = await audioPromise;
+            let audioData: Buffer;
+            try {
+                audioData = await this.tts.synthesize(task.text);
+            } catch (error) {
+                this.logError('tts.synthesize', '[Agent] TTS synthesize failed', error);
+                continue;
+            }
             if (!audioData || audioData.length === 0) {
-                console.warn('[Agent] Empty audio received. Skipping playback.');
+                if (!this.isDryRun) {
+                    console.warn('[Agent] Empty audio received. Skipping playback.');
+                }
                 continue;
             }
 
             try {
                 await this.audioPlayer.play(audioData);
             } catch (error) {
-                console.error('[Agent] Audio playback failed', error);
+                this.logError('audio.play', '[Agent] Audio playback failed', error);
             }
         }
     }
@@ -139,9 +167,14 @@ export class Agent {
     }
 
     private async generateReply(msg: ChatMessage) {
-        const prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
-        const text = await this.llm.generateText(prompt);
-        return text.trim();
+        try {
+            const prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
+            const text = await this.llm.generateText(prompt);
+            return text.trim();
+        } catch (error) {
+            this.logError('llm.reply', '[Agent] generateReply failed', error);
+            return '（うまく返答できなかったみたい…）';
+        }
     }
 
     private async maybeGenerateMonologue(): Promise<void> {
@@ -163,8 +196,34 @@ export class Agent {
                 this.spine.getNextSection();
             }
             this.lastMonologueAt = Date.now();
+        } catch (error) {
+            this.logError('llm.monologue', '[Agent] generateMonologue failed', error);
         } finally {
             this.isGeneratingMonologue = false;
         }
     }
+
+    private logError(key: string, message: string, error: unknown) {
+        const now = Date.now();
+        const last = this.lastErrorAt[key] ?? 0;
+
+        if (now - last >= this.errorCooldownMs) {
+            const suppressed = this.suppressedErrors[key] ?? 0;
+            if (suppressed > 0) {
+                console.warn(`[Agent] Suppressed ${suppressed} errors for ${key}.`);
+                this.suppressedErrors[key] = 0;
+            }
+            console.error(message, error);
+            this.lastErrorAt[key] = now;
+            return;
+        }
+
+        this.suppressedErrors[key] = (this.suppressedErrors[key] ?? 0) + 1;
+    }
 }
+
+const parseBoolean = (value?: string): boolean => {
+    if (!value) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+};

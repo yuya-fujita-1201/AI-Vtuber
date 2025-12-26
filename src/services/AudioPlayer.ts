@@ -7,13 +7,22 @@ import { IAudioPlayer } from '../interfaces';
 export class AudioPlayer implements IAudioPlayer {
     private currentPlayback: Promise<void> | null = null;
     private readonly command: string;
+    private readonly isDryRun: boolean;
 
     constructor(command?: string) {
         this.command = command ?? this.resolveDefaultCommand();
+        this.isDryRun = parseBoolean(process.env.DRY_RUN);
+
+        if (this.isDryRun) {
+            console.log('[AudioPlayer] DRY_RUN enabled. Skipping audio playback.');
+        }
     }
 
     public async play(buffer: Buffer): Promise<void> {
         if (!buffer || buffer.length === 0) {
+            return;
+        }
+        if (this.isDryRun) {
             return;
         }
 
@@ -75,3 +84,9 @@ export class AudioPlayer implements IAudioPlayer {
         return 'afplay';
     }
 }
+
+const parseBoolean = (value?: string): boolean => {
+    if (!value) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+};
