@@ -1,7 +1,9 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
 import { OpenAIService } from '../services/OpenAIService';
+import { VoicevoxService } from '../services/VoicevoxService';
+import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
 
 export class Agent {
@@ -9,6 +11,8 @@ export class Agent {
     private spine: TopicSpine;
     private router: CommentRouter;
     private llm: ILLMService;
+    private tts: ITTSService;
+    private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
     private speechQueue: SpeechTask[] = [];
 
@@ -20,13 +24,17 @@ export class Agent {
     constructor(
         adapter: IChatAdapter,
         llmService: ILLMService = new OpenAIService(),
-        promptManager: PromptManager = new PromptManager()
+        promptManager: PromptManager = new PromptManager(),
+        ttsService: ITTSService = new VoicevoxService(),
+        audioPlayer: IAudioPlayer = new AudioPlayer()
     ) {
         this.adapter = adapter;
         this.spine = new TopicSpine();
         this.router = new CommentRouter();
         this.llm = llmService;
         this.promptManager = promptManager;
+        this.tts = ttsService;
+        this.audioPlayer = audioPlayer;
     }
 
     public async start() {
@@ -85,7 +93,7 @@ export class Agent {
         }
 
         // 4. 出力処理 (Queueから取り出して実行)
-        this.processQueue();
+        await this.processQueue();
     }
 
     private enqueueSpeech(text: string, priority: 'HIGH' | 'NORMAL' | 'LOW', sourceCommentId?: string) {
@@ -104,13 +112,25 @@ export class Agent {
         });
     }
 
-    private processQueue() {
-        if (this.speechQueue.length === 0) return;
+    private async processQueue() {
+        while (this.speechQueue.length > 0) {
+            const task = this.speechQueue.shift();
+            if (!task) continue;
 
-        // 先頭を取得
-        const task = this.speechQueue.shift();
-        if (task) {
+            const audioPromise = this.tts.synthesize(task.text);
             console.log(`[SPEAK] ${task.text}`);
+
+            const audioData = await audioPromise;
+            if (!audioData || audioData.length === 0) {
+                console.warn('[Agent] Empty audio received. Skipping playback.');
+                continue;
+            }
+
+            try {
+                await this.audioPlayer.play(audioData);
+            } catch (error) {
+                console.error('[Agent] Audio playback failed', error);
+            }
         }
     }
 

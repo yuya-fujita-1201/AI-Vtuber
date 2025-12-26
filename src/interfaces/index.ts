@@ -23,7 +23,7 @@ export interface IChatAdapter<TConfig = Record<string, unknown>> {
   disconnect(): Promise<void> | void;
 }
 
-export interface TTSService {
+export interface ITTSService {
   /**
    * テキストから音声データを生成する
    * @param text 話す内容
@@ -36,6 +36,15 @@ export interface TTSService {
    * サービスの生存確認
    */
   isReady(): Promise<boolean>;
+}
+
+export type TTSService = ITTSService;
+
+export interface IAudioPlayer {
+  /**
+   * 音声データを再生する (再生完了まで待機)
+   */
+  play(buffer: Buffer): Promise<void>;
 }
 
 export interface LLMRequest {
