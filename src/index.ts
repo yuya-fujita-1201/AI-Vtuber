@@ -2,9 +2,10 @@ import 'dotenv/config';
 import { FileReplayAdapter, FileReplayAdapterConfig } from './adapters/FileReplayAdapter';
 import { YouTubeLiveAdapter, YouTubeLiveAdapterConfig } from './adapters/YouTubeLiveAdapter';
 import { ChatMessage, IChatAdapter } from './interfaces';
+import { Agent } from './core/Agent';
 
 type AdapterSetup = {
-  adapter: IChatAdapter;
+  adapter: IChatAdapter<any>;
   config: FileReplayAdapterConfig | YouTubeLiveAdapterConfig;
   label: string;
 };
@@ -43,15 +44,11 @@ const setupAdapter = (): AdapterSetup => {
   };
 };
 
-const formatMessage = (message: ChatMessage): string => {
-  const time = new Date(message.timestamp).toLocaleTimeString('ja-JP', { hour12: false });
-  return `[${time}] ${message.authorName}: ${message.content}`;
-};
-
 const main = async () => {
   const { adapter, config, label } = setupAdapter();
   let running = true;
   let shutdownStarted = false;
+  let agent: Agent | null = null;
 
   const shutdown = async () => {
     if (shutdownStarted) {
@@ -60,6 +57,11 @@ const main = async () => {
     shutdownStarted = true;
     running = false;
     console.log('\n[System] Shutting down...');
+
+    if (agent) {
+      agent.stop();
+    }
+
     try {
       await adapter.disconnect();
     } catch (error) {
@@ -75,19 +77,9 @@ const main = async () => {
   await adapter.connect(config);
   console.log(`[System] Adapter ready: ${label}`);
 
-  while (running) {
-    try {
-      const messages = await adapter.fetchNewMessages();
-      for (const message of messages) {
-        console.log(formatMessage(message));
-      }
-    } catch (error) {
-      console.error('[System] Fetch error', error);
-      await sleep(1000);
-    }
-
-    await sleep(100);
-  }
+  // Create and start Agent
+  agent = new Agent(adapter);
+  await agent.start();
 };
 
 const toNumber = (value: string | undefined, fallback: number): number => {
@@ -98,6 +90,8 @@ const toNumber = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+// Sleep utility inside Agent usage mostly, but we might keep it if needed elsewhere, 
+// though standard sleep was removed from main loop.
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 main().catch((error) => {

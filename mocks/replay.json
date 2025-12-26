@@ -1,0 +1,26 @@
+[
+    {
+        "id": "msg-1",
+        "authorName": "UserA",
+        "content": "こんにちは、元気ですか？",
+        "timestamp": 1000
+    },
+    {
+        "id": "msg-2",
+        "authorName": "UserB",
+        "content": "www",
+        "timestamp": 2000
+    },
+    {
+        "id": "msg-3",
+        "authorName": "UserC",
+        "content": "次の話題へ",
+        "timestamp": 3000
+    },
+    {
+        "id": "msg-4",
+        "authorName": "UserA",
+        "content": "草",
+        "timestamp": 4000
+    }
+]
