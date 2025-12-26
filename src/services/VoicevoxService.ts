@@ -4,21 +4,28 @@ import { ITTSService } from '../interfaces';
 export class VoicevoxService implements ITTSService {
     private client: AxiosInstance;
     private readonly speakerId: number;
+    private readonly isDryRun: boolean;
 
     constructor(baseUrl?: string, speakerId?: number) {
         const resolvedBaseUrl = (baseUrl ?? process.env.VOICEVOX_BASE_URL ?? 'http://localhost:50021').replace(/\/+$/, '');
         const envSpeaker = Number(process.env.VOICEVOX_SPEAKER_ID ?? '1');
         const resolvedSpeaker = speakerId ?? (Number.isFinite(envSpeaker) ? envSpeaker : 1);
+        this.isDryRun = parseBoolean(process.env.DRY_RUN);
 
         this.client = axios.create({
             baseURL: resolvedBaseUrl,
             timeout: 15000
         });
         this.speakerId = resolvedSpeaker;
+
+        if (this.isDryRun) {
+            console.log('[VoicevoxService] DRY_RUN enabled. Skipping synthesis requests.');
+        }
     }
 
     public async synthesize(text: string, options?: Record<string, unknown>): Promise<Buffer> {
         if (!text) return Buffer.alloc(0);
+        if (this.isDryRun) return Buffer.alloc(0);
 
         const overrideSpeaker = this.resolveSpeaker(options);
 
@@ -44,6 +51,9 @@ export class VoicevoxService implements ITTSService {
     }
 
     public async isReady(): Promise<boolean> {
+        if (this.isDryRun) {
+            return true;
+        }
         try {
             await this.client.get('/speakers');
             return true;
@@ -70,3 +80,9 @@ export class VoicevoxService implements ITTSService {
         return this.speakerId;
     }
 }
+
+const parseBoolean = (value?: string): boolean => {
+    if (!value) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+};
