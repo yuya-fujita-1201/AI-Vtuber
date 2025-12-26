@@ -3,9 +3,9 @@
 動作確認手順の詳細です。テストを実施する前に、ターミナルで `VOICEVOX` が起動していることを確認してください。
 
 ## 1. YouTube Live接続テスト (またはMockテスト)
-- [ ] **設定**: `.env` で `CHAT_ADAPTER=MOCK` に設定されていることを確認してください（YouTube接続テストを行う場合は `YOUTUBE` に変更し、APIキー等を設定）。
-- [ ] **実行**: ターミナルで `npm run dev` を実行します。
-- [ ] **確認**: ログに `[System] Adapter ready: FileReplayAdapter` (YouTubeの場合は `YouTubeLiveAdapter`) と表示されればOKです。
+- [1] **設定**: `.env` で `CHAT_ADAPTER=MOCK` に設定されていることを確認してください（YouTube接続テストを行う場合は `YOUTUBE` に変更し、APIキー等を設定）。
+- [1] **実行**: ターミナルで `npm run dev` を実行します。
+- [1] **確認**: ログに `[System] Adapter ready: FileReplayAdapter` (YouTubeの場合は `YouTubeLiveAdapter`) と表示されればOKです。
 
 ## 2. コメント返信テスト
 - [ ] **準備**: `mocks/replay.json` (または `mocks/sample.json`) を開き、以下のようなデータを追記・保存します。

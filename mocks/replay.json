@@ -22,5 +22,17 @@
         "authorName": "UserA",
         "content": "草",
         "timestamp": 4000
+    },
+    {
+        "id": "test-reply-1",
+        "authorName": "Tester",
+        "content": "こんにちは！いい天気ですね",
+        "timestamp": 2000000000000
+    },
+    {
+        "id": "test-reaction-1",
+        "authorName": "Tester",
+        "content": "草",
+        "timestamp": 2000000000010
     }
 ]
