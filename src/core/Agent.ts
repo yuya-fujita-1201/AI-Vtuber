@@ -5,6 +5,8 @@ import { OpenAIService } from '../services/OpenAIService';
 import { VoicevoxService } from '../services/VoicevoxService';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
+import { MemoryService, MemoryType } from '../services/MemoryService';
+import { prisma } from '../lib/prisma';
 
 export class Agent {
     private adapter: IChatAdapter;
@@ -14,8 +16,10 @@ export class Agent {
     private tts: ITTSService;
     private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
+    private memoryService?: MemoryService;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
+    private currentStreamId?: string;
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
@@ -35,7 +39,8 @@ export class Agent {
         llmService: ILLMService = new OpenAIService(),
         promptManager: PromptManager = new PromptManager(),
         ttsService: ITTSService = new VoicevoxService(),
-        audioPlayer: IAudioPlayer = new AudioPlayer()
+        audioPlayer: IAudioPlayer = new AudioPlayer(),
+        memoryService?: MemoryService
     ) {
         this.adapter = adapter;
         this.spine = new TopicSpine();
@@ -44,6 +49,7 @@ export class Agent {
         this.promptManager = promptManager;
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
+        this.memoryService = memoryService;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
     }
@@ -51,6 +57,26 @@ export class Agent {
     public async start() {
         this.isRunning = true;
         console.log('[Agent] Started.');
+
+        // Initialize memory service and create stream session
+        if (this.memoryService) {
+            try {
+                await this.memoryService.initialize();
+                console.log('[Agent] Memory service initialized');
+
+                // Create a new stream session
+                const stream = await prisma.stream.create({
+                    data: {
+                        title: this.spine.currentState.title,
+                        platform: process.env.CHAT_ADAPTER || 'mock',
+                    },
+                });
+                this.currentStreamId = stream.id;
+                console.log(`[Agent] Stream session created: ${stream.id}`);
+            } catch (error) {
+                this.logError('memory.init', '[Agent] Memory initialization failed', error);
+            }
+        }
 
         while (this.isRunning) {
             try {
@@ -62,9 +88,25 @@ export class Agent {
         }
     }
 
-    public stop() {
+    public async stop() {
         this.isRunning = false;
         console.log('[Agent] Stopping...');
+
+        // End stream session and disconnect memory service
+        if (this.memoryService && this.currentStreamId) {
+            try {
+                await prisma.stream.update({
+                    where: { id: this.currentStreamId },
+                    data: { endedAt: new Date() },
+                });
+                console.log(`[Agent] Stream session ended: ${this.currentStreamId}`);
+
+                await this.memoryService.disconnect();
+                console.log('[Agent] Memory service disconnected');
+            } catch (error) {
+                console.error('[Agent] Error during shutdown:', error);
+            }
+        }
     }
 
     private async tick() {
@@ -87,12 +129,15 @@ export class Agent {
                 continue;
             }
 
+            // Store message in database
+            await this.storeMessage(msg, type);
+
             let responseText = '';
             let priority: 'HIGH' | 'NORMAL' = 'NORMAL';
 
             switch (type) {
                 case CommentType.ON_TOPIC:
-                    responseText = await this.generateReply(msg);
+                    responseText = await this.generateReply(msg, type);
                     priority = 'HIGH';
                     break;
                 case CommentType.REACTION:
@@ -176,9 +221,32 @@ export class Agent {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    private async generateReply(msg: ChatMessage) {
+    private async generateReply(msg: ChatMessage, type?: CommentType) {
         try {
-            const prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
+            let prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
+
+            // Enhance prompt with relevant memories
+            if (this.memoryService) {
+                try {
+                    const relevantMemories = await this.memoryService.searchMemory(
+                        msg.content,
+                        3,
+                        { type: MemoryType.VIEWER_INFO }
+                    );
+
+                    if (relevantMemories.length > 0) {
+                        const memoryContext = relevantMemories
+                            .map(m => `[過去の記憶: ${m.content}]`)
+                            .join('\n');
+
+                        // Prepend memory context to user prompt
+                        prompt.userPrompt = `${memoryContext}\n\n${prompt.userPrompt}`;
+                    }
+                } catch (error) {
+                    this.logError('memory.search', '[Agent] Memory search failed', error);
+                }
+            }
+
             const text = await this.llm.generateText(prompt);
             return text.trim();
         } catch (error) {
@@ -218,7 +286,7 @@ export class Agent {
         const pending = this.pendingComments.shift();
         if (!pending) return;
 
-        const responseText = await this.generateReply(pending);
+        const responseText = await this.generateReply(pending, CommentType.OFF_TOPIC);
         if (responseText) {
             this.enqueueSpeech(responseText, 'NORMAL', pending.id);
         }
@@ -233,6 +301,68 @@ export class Agent {
     private getRandomPreSpeechDelayMs(): number {
         const span = this.preSpeechDelayMaxMs - this.preSpeechDelayMinMs;
         return this.preSpeechDelayMinMs + Math.random() * span;
+    }
+
+    /**
+     * Store message in database and create memory if important
+     */
+    private async storeMessage(msg: ChatMessage, type: CommentType): Promise<void> {
+        if (!this.memoryService || !this.currentStreamId) return;
+
+        try {
+            // Find or create viewer
+            let viewer = await prisma.viewer.findFirst({
+                where: { name: msg.authorName },
+            });
+
+            if (!viewer) {
+                viewer = await prisma.viewer.create({
+                    data: {
+                        name: msg.authorName,
+                        platform: process.env.CHAT_ADAPTER || 'mock',
+                    },
+                });
+            } else {
+                // Update last seen and message count
+                await prisma.viewer.update({
+                    where: { id: viewer.id },
+                    data: {
+                        lastSeenAt: new Date(),
+                        messageCount: { increment: 1 },
+                    },
+                });
+            }
+
+            // Store message
+            await prisma.message.create({
+                data: {
+                    content: msg.content,
+                    authorName: msg.authorName,
+                    externalId: msg.id,
+                    type,
+                    streamId: this.currentStreamId,
+                    viewerId: viewer.id,
+                },
+            });
+
+            // Store important messages as memories
+            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
+                const importance = type === CommentType.CHANGE_REQ ? 8 : 6;
+                await this.memoryService.addMemory({
+                    content: `${msg.authorName}さんのコメント: "${msg.content}"`,
+                    type: MemoryType.CONVERSATION_SUMMARY,
+                    importance,
+                    streamId: this.currentStreamId,
+                    viewerId: viewer.id,
+                    metadata: {
+                        commentType: type,
+                        timestamp: msg.timestamp,
+                    },
+                });
+            }
+        } catch (error) {
+            this.logError('memory.store', '[Agent] Failed to store message', error);
+        }
     }
 
     private logError(key: string, message: string, error: unknown) {

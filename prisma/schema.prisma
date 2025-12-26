@@ -1,0 +1,176 @@
+// Prisma Schema for AI VTuber Memory System
+// Database: SQLite (for simplicity and portability)
+// Purpose: Store structured memory data for long-term retention
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ========================================
+// CORE MODELS
+// ========================================
+
+/// Represents a single streaming session
+model Stream {
+  id          String   @id @default(cuid())
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+
+  // Session metadata
+  title       String?  // Main topic/theme of the stream
+  description String?  // Optional description
+  platform    String   @default("youtube") // youtube, mock, etc.
+  externalId  String?  // Platform-specific ID (e.g., YouTube video ID)
+
+  // Relationships
+  messages    Message[]
+  topics      Topic[]
+  memories    Memory[]
+
+  // Indexes for performance
+  @@index([startedAt])
+  @@index([platform, externalId])
+}
+
+/// Represents a single chat message from a viewer
+model Message {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+
+  // Message content
+  content     String
+  authorName  String
+  externalId  String?  // Platform-specific message ID
+
+  // Classification (CommentType enum)
+  type        String   @default("IGNORE") // ON_TOPIC, REACTION, OFF_TOPIC, CHANGE_REQ, IGNORE
+
+  // Relationships
+  streamId    String
+  stream      Stream   @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  viewerId    String?
+  viewer      Viewer?  @relation(fields: [viewerId], references: [id], onDelete: SetNull)
+
+  // Response tracking
+  wasAnswered Boolean  @default(false)
+  responseId  String?  // ID of the SpeechTask that responded to this
+
+  // Indexes
+  @@index([streamId, createdAt])
+  @@index([viewerId])
+  @@index([type])
+  @@index([externalId])
+}
+
+/// Represents a unique viewer/user
+model Viewer {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Identity
+  name        String   // Display name (can change)
+  externalId  String?  @unique // Platform user ID (stable)
+  platform    String   @default("youtube")
+
+  // Profile data
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  messageCount Int     @default(0)
+
+  // Relationships
+  messages    Message[]
+  memories    Memory[]  // Facts about this viewer
+
+  // Indexes
+  @@index([externalId, platform])
+  @@index([lastSeenAt])
+}
+
+/// Represents a topic/section discussed during streams
+model Topic {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+
+  // Topic content
+  title       String
+  outline     Json?    // Array of sections (type-safe JSON)
+
+  // Metadata
+  sectionIndex Int     @default(0)
+  isCompleted Boolean  @default(false)
+
+  // Relationships
+  streamId    String
+  stream      Stream   @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  memories    Memory[]
+
+  @@index([streamId])
+}
+
+/// Represents a memory/fact to be vectorized
+/// These will be synced to ChromaDB for semantic search
+model Memory {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+
+  // Memory content
+  content     String   // The actual memory text
+  summary     String?  // Optional short summary
+
+  // Classification
+  type        String   // FACT, PREFERENCE, EVENT, CONVERSATION_SUMMARY, etc.
+  importance  Int      @default(5) // 1-10 scale
+
+  // Context
+  streamId    String?
+  stream      Stream?  @relation(fields: [streamId], references: [id], onDelete: SetNull)
+
+  topicId     String?
+  topic       Topic?   @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  viewerId    String?
+  viewer      Viewer?  @relation(fields: [viewerId], references: [id], onDelete: SetNull)
+
+  // Vector DB sync
+  vectorId    String?  @unique // ChromaDB document ID
+  lastSyncedAt DateTime?
+
+  // Metadata (JSON for flexible data)
+  metadata    Json?    // Type-safe JSON object for additional context
+
+  // Indexes
+  @@index([type])
+  @@index([importance])
+  @@index([streamId])
+  @@index([viewerId])
+  @@index([vectorId])
+}
+
+// ========================================
+// ANALYTICS & AGGREGATIONS (Optional)
+// ========================================
+
+/// Daily statistics for tracking engagement
+model DailyStats {
+  id          String   @id @default(cuid())
+  date        DateTime @unique // Date only (time truncated)
+
+  // Counts
+  messageCount    Int @default(0)
+  uniqueViewers   Int @default(0)
+  streamCount     Int @default(0)
+
+  // Engagement metrics
+  avgResponseTime Float?
+  topViewerName   String?
+
+  @@index([date])
+}
