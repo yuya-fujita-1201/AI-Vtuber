@@ -15,11 +15,16 @@ export class Agent {
     private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
     private speechQueue: SpeechTask[] = [];
+    private pendingComments: ChatMessage[] = [];
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
     private lastMonologueAt: number = 0;
     private readonly monologueIntervalMs: number = 10_000;
+    private readonly monologueIntervalVarianceMs: number = 3_000;
+    private nextMonologueDelayMs: number;
+    private readonly preSpeechDelayMinMs: number = 500;
+    private readonly preSpeechDelayMaxMs: number = 2_000;
     private readonly errorCooldownMs: number = 10_000;
     private readonly isDryRun: boolean;
     private lastErrorAt: Record<string, number> = {};
@@ -40,6 +45,7 @@ export class Agent {
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
     }
 
     public async start() {
@@ -94,8 +100,7 @@ export class Agent {
                     priority = 'HIGH';
                     break;
                 case CommentType.OFF_TOPIC:
-                    responseText = `（保留）後で拾います: ${msg.content}`;
-                    priority = 'NORMAL';
+                    this.pendingComments.push(msg);
                     break;
                 case CommentType.CHANGE_REQ:
                     responseText = `（話題変更のリクエストを受け付けました）`;
@@ -110,7 +115,11 @@ export class Agent {
 
         // 3. 自発発話 (Queueが空で、コメントもなかった場合など -> 今回はQueue空なら発話)
         if (this.speechQueue.length === 0 && newMessages.length === 0) {
-            await this.maybeGenerateMonologue();
+            if (this.pendingComments.length > 0) {
+                await this.processPendingComment();
+            } else {
+                await this.maybeGenerateMonologue();
+            }
         }
 
         // 4. 出力処理 (Queueから取り出して実行)
@@ -155,6 +164,7 @@ export class Agent {
             }
 
             try {
+                await this.sleep(this.getRandomPreSpeechDelayMs());
                 await this.audioPlayer.play(audioData);
             } catch (error) {
                 this.logError('audio.play', '[Agent] Audio playback failed', error);
@@ -181,7 +191,7 @@ export class Agent {
         if (this.isGeneratingMonologue) return;
 
         const now = Date.now();
-        if (now - this.lastMonologueAt < this.monologueIntervalMs) return;
+        if (now - this.lastMonologueAt < this.nextMonologueDelayMs) return;
 
         const currentState = this.spine.currentState;
         const currentSection = currentState.outline[currentState.currentSectionIndex];
@@ -196,11 +206,33 @@ export class Agent {
                 this.spine.getNextSection();
             }
             this.lastMonologueAt = Date.now();
+            this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
         } catch (error) {
             this.logError('llm.monologue', '[Agent] generateMonologue failed', error);
         } finally {
             this.isGeneratingMonologue = false;
         }
+    }
+
+    private async processPendingComment(): Promise<void> {
+        const pending = this.pendingComments.shift();
+        if (!pending) return;
+
+        const responseText = await this.generateReply(pending);
+        if (responseText) {
+            this.enqueueSpeech(responseText, 'NORMAL', pending.id);
+        }
+    }
+
+    private getRandomMonologueIntervalMs(): number {
+        const variance = (Math.random() * 2 - 1) * this.monologueIntervalVarianceMs;
+        const interval = this.monologueIntervalMs + variance;
+        return Math.max(1_000, Math.round(interval));
+    }
+
+    private getRandomPreSpeechDelayMs(): number {
+        const span = this.preSpeechDelayMaxMs - this.preSpeechDelayMinMs;
+        return this.preSpeechDelayMinMs + Math.random() * span;
     }
 
     private logError(key: string, message: string, error: unknown) {
