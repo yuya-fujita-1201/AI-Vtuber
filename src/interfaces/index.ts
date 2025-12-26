@@ -42,6 +42,11 @@ export interface LLMRequest {
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;
+  model?: string;
+  maxTokens?: number;
+  topP?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
 }
 
 export interface ILLMService {
