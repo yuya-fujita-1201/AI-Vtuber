@@ -92,9 +92,11 @@ export class Agent {
         this.isRunning = false;
         console.log('[Agent] Stopping...');
 
-        // End stream session and disconnect memory service
+        // Memory consolidation: Generate stream summary before ending
         if (this.memoryService && this.currentStreamId) {
             try {
+                await this.consolidateStreamMemory();
+
                 await prisma.stream.update({
                     where: { id: this.currentStreamId },
                     data: { endedAt: new Date() },
@@ -223,29 +225,58 @@ export class Agent {
 
     private async generateReply(msg: ChatMessage, type?: CommentType) {
         try {
-            let prompt = this.promptManager.buildReplyPrompt(msg, this.spine.currentState);
-
-            // Enhance prompt with relevant memories
+            // Search for relevant memories with proper viewerId filtering
+            let relevantMemories: any[] = [];
             if (this.memoryService) {
                 try {
-                    const relevantMemories = await this.memoryService.searchMemory(
+                    // Get viewer to filter memories by viewerId (prevent memory mixing!)
+                    const viewer = await prisma.viewer.findFirst({
+                        where: { name: msg.authorName },
+                    });
+
+                    const searchFilter: any = {};
+
+                    // CRITICAL: Filter by viewerId to prevent cross-user memory contamination
+                    if (viewer) {
+                        searchFilter.viewerId = viewer.id;
+                        console.log(`[Agent] Searching memories for viewer: ${msg.authorName} (${viewer.id})`);
+                    }
+
+                    // Also search for general conversation summaries (not viewer-specific)
+                    const viewerMemories = viewer ? await this.memoryService.searchMemory(
                         msg.content,
                         3,
-                        { type: MemoryType.VIEWER_INFO }
+                        { type: MemoryType.VIEWER_INFO, viewerId: viewer.id }
+                    ) : [];
+
+                    const conversationMemories = await this.memoryService.searchMemory(
+                        msg.content,
+                        2,
+                        { type: MemoryType.CONVERSATION_SUMMARY }
                     );
 
-                    if (relevantMemories.length > 0) {
-                        const memoryContext = relevantMemories
-                            .map(m => `[過去の記憶: ${m.content}]`)
-                            .join('\n');
+                    // Combine and deduplicate memories
+                    const allMemories = [...viewerMemories, ...conversationMemories];
+                    const uniqueMemories = allMemories.filter((m, i, arr) =>
+                        arr.findIndex(m2 => m2.id === m.id) === i
+                    );
 
-                        // Prepend memory context to user prompt
-                        prompt.userPrompt = `${memoryContext}\n\n${prompt.userPrompt}`;
-                    }
+                    // Sort by similarity and take top 5
+                    relevantMemories = uniqueMemories
+                        .sort((a, b) => b.similarity - a.similarity)
+                        .slice(0, 5);
+
                 } catch (error) {
                     this.logError('memory.search', '[Agent] Memory search failed', error);
                 }
             }
+
+            // Build prompt with memories integrated by PromptManager
+            const prompt = this.promptManager.buildReplyPrompt(
+                msg,
+                this.spine.currentState,
+                relevantMemories
+            );
 
             const text = await this.llm.generateText(prompt);
             return text.trim();
@@ -381,6 +412,78 @@ export class Agent {
         }
 
         this.suppressedErrors[key] = (this.suppressedErrors[key] ?? 0) + 1;
+    }
+
+    /**
+     * Consolidate stream memories at the end of the stream
+     * Generate a summary and save important events/highlights
+     */
+    private async consolidateStreamMemory(): Promise<void> {
+        if (!this.memoryService || !this.currentStreamId) return;
+
+        try {
+            console.log('[Agent] Consolidating stream memory...');
+
+            // Get stream data
+            const stream = await prisma.stream.findUnique({
+                where: { id: this.currentStreamId },
+                include: {
+                    messages: {
+                        orderBy: { createdAt: 'asc' },
+                        take: 100, // Limit to avoid token overflow
+                    },
+                },
+            });
+
+            if (!stream || !stream.messages.length) {
+                console.log('[Agent] No messages to consolidate');
+                return;
+            }
+
+            // Build consolidation prompt
+            const messagesSummary = stream.messages
+                .map(m => `- ${m.authorName}: ${m.content}`)
+                .join('\n');
+
+            const consolidationPrompt = {
+                systemPrompt: `あなたは配信の振り返りをする担当者です。配信の内容を簡潔にまとめてください。
+
+配信タイトル: ${stream.title}
+配信時間: ${stream.startedAt.toLocaleString('ja-JP')} 〜 ${new Date().toLocaleString('ja-JP')}
+コメント数: ${stream.messages.length}
+
+主なコメント:
+${messagesSummary}
+
+以下の観点でまとめてください:
+1. 配信の主なトピック
+2. 盛り上がった話題
+3. 視聴者からの重要な質問やリクエスト
+4. 次回に活かせるポイント`,
+                userPrompt: '上記の配信内容を2-3文で要約してください。',
+                temperature: 0.3,
+                maxTokens: 500,
+            };
+
+            const summary = await this.llm.generateText(consolidationPrompt);
+
+            // Save as EVENT memory
+            await this.memoryService.addMemory({
+                content: summary.trim(),
+                type: MemoryType.EVENT,
+                importance: 7,
+                streamId: this.currentStreamId,
+                summary: `配信「${stream.title}」のまとめ`,
+                metadata: {
+                    messageCount: stream.messages.length,
+                    duration: Date.now() - stream.startedAt.getTime(),
+                },
+            });
+
+            console.log('[Agent] Stream memory consolidated successfully');
+        } catch (error) {
+            this.logError('memory.consolidate', '[Agent] Failed to consolidate stream memory', error);
+        }
     }
 }
 

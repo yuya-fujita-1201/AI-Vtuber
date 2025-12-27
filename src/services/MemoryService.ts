@@ -11,7 +11,7 @@
  * - Remember facts and preferences across streams
  */
 
-import { ChromaClient, Collection, OpenAIEmbeddingFunction } from 'chromadb';
+import { ChromaClient, Collection } from 'chromadb';
 import OpenAI from 'openai';
 import { prisma } from '../lib/prisma';
 
@@ -49,7 +49,6 @@ export class MemoryService {
   private chromaClient: ChromaClient;
   private collection: Collection | null = null;
   private openai: OpenAI;
-  private embeddingFunction: OpenAIEmbeddingFunction;
   private isInitialized: boolean = false;
 
   // Configuration
@@ -67,12 +66,6 @@ export class MemoryService {
     }
 
     this.openai = new OpenAI({ apiKey });
-
-    // Initialize OpenAI embedding function for ChromaDB
-    this.embeddingFunction = new OpenAIEmbeddingFunction({
-      openai_api_key: apiKey,
-      openai_model: this.embeddingModel,
-    });
   }
 
   /**
@@ -96,14 +89,12 @@ export class MemoryService {
       try {
         this.collection = await this.chromaClient.getCollection({
           name: this.collectionName,
-          embeddingFunction: this.embeddingFunction,
         });
         console.log(`[MemoryService] Using existing collection: ${this.collectionName}`);
       } catch (error) {
         // Collection doesn't exist, create it
         this.collection = await this.chromaClient.createCollection({
           name: this.collectionName,
-          embeddingFunction: this.embeddingFunction,
           metadata: { description: 'AI VTuber long-term memories' },
         });
         console.log(`[MemoryService] Created new collection: ${this.collectionName}`);
@@ -151,7 +142,7 @@ export class MemoryService {
           streamId,
           topicId,
           viewerId,
-          metadata,
+          metadata: metadata as any, // Prisma Json type
           lastSyncedAt: new Date(),
         },
       });
@@ -204,6 +195,9 @@ export class MemoryService {
     try {
       console.log(`[MemoryService] Searching memories for: "${query}"`);
 
+      // Generate query embedding manually for stable search
+      const queryEmbedding = await this.generateEmbedding(query);
+
       // Build where filter for ChromaDB
       const whereFilter: Record<string, any> = {};
       if (filter?.type) {
@@ -216,9 +210,9 @@ export class MemoryService {
         whereFilter.streamId = filter.streamId;
       }
 
-      // Query ChromaDB
+      // Query ChromaDB with embedding (more stable than queryTexts)
       const results = await this.collection.query({
-        queryTexts: [query],
+        queryEmbeddings: [queryEmbedding],
         nResults: limit,
         ...(Object.keys(whereFilter).length > 0 ? { where: whereFilter } : {}),
       });
@@ -236,7 +230,7 @@ export class MemoryService {
 
           // Convert distance to similarity (0-1, higher is better)
           // ChromaDB uses cosine distance, so similarity = 1 - distance
-          const similarity = distance !== undefined ? 1 - distance : 0;
+          const similarity = (distance !== undefined && distance !== null) ? 1 - distance : 0;
 
           memories.push({
             id: metadata.memoryId as string,
