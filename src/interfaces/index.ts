@@ -88,3 +88,7 @@ export interface SpeechTask {
   sourceCommentId?: string;
   timestamp: number;
 }
+
+export interface IAgentEventEmitter {
+  broadcast(event: string, data?: unknown): void;
+}

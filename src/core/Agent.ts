@@ -1,4 +1,4 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
 import { OpenAIService } from '../services/OpenAIService';
@@ -7,6 +7,15 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
 import { MemoryService, MemoryType } from '../services/MemoryService';
 import { prisma } from '../lib/prisma';
+
+type AgentOptions = {
+    llmService?: ILLMService;
+    promptManager?: PromptManager;
+    ttsService?: ITTSService;
+    audioPlayer?: IAudioPlayer;
+    memoryService?: MemoryService;
+    eventEmitter?: IAgentEventEmitter;
+};
 
 export class Agent {
     private adapter: IChatAdapter;
@@ -17,6 +26,7 @@ export class Agent {
     private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
     private memoryService?: MemoryService;
+    private eventEmitter?: IAgentEventEmitter;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
     private currentStreamId?: string;
@@ -34,14 +44,16 @@ export class Agent {
     private lastErrorAt: Record<string, number> = {};
     private suppressedErrors: Record<string, number> = {};
 
-    constructor(
-        adapter: IChatAdapter,
-        llmService: ILLMService = new OpenAIService(),
-        promptManager: PromptManager = new PromptManager(),
-        ttsService: ITTSService = new VoicevoxService(),
-        audioPlayer: IAudioPlayer = new AudioPlayer(),
-        memoryService?: MemoryService
-    ) {
+    constructor(adapter: IChatAdapter, options: AgentOptions = {}) {
+        const {
+            llmService = new OpenAIService(),
+            promptManager = new PromptManager(),
+            ttsService = new VoicevoxService(),
+            audioPlayer = new AudioPlayer(),
+            memoryService,
+            eventEmitter
+        } = options;
+
         this.adapter = adapter;
         this.spine = new TopicSpine();
         this.router = new CommentRouter();
@@ -50,6 +62,7 @@ export class Agent {
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
         this.memoryService = memoryService;
+        this.eventEmitter = eventEmitter;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
     }
@@ -123,6 +136,8 @@ export class Agent {
 
         // 2. コメント処理
         for (const msg of newMessages) {
+            this.emitEvent('comment', { message: msg, receivedAt: Date.now() });
+
             let type: CommentType = CommentType.IGNORE;
             try {
                 type = await this.router.classify(msg, this.spine.currentState);
@@ -203,18 +218,50 @@ export class Agent {
                 this.logError('tts.synthesize', '[Agent] TTS synthesize failed', error);
                 continue;
             }
+            const durationMs = this.estimateSpeechDurationMs(task.text, audioData);
+
             if (!audioData || audioData.length === 0) {
                 if (!this.isDryRun) {
                     console.warn('[Agent] Empty audio received. Skipping playback.');
+                    continue;
                 }
+
+                const startedAt = Date.now();
+                this.emitEvent('speaking_start', {
+                    text: task.text,
+                    durationMs,
+                    taskId: task.id,
+                    sourceCommentId: task.sourceCommentId,
+                    startedAt
+                });
+                await this.sleep(durationMs);
+                this.emitEvent('speaking_end', {
+                    taskId: task.id,
+                    endedAt: Date.now()
+                });
                 continue;
             }
 
+            await this.sleep(this.getRandomPreSpeechDelayMs());
+
+            const startedAt = Date.now();
+            this.emitEvent('speaking_start', {
+                text: task.text,
+                durationMs,
+                taskId: task.id,
+                sourceCommentId: task.sourceCommentId,
+                startedAt
+            });
+
             try {
-                await this.sleep(this.getRandomPreSpeechDelayMs());
                 await this.audioPlayer.play(audioData);
             } catch (error) {
                 this.logError('audio.play', '[Agent] Audio playback failed', error);
+            } finally {
+                this.emitEvent('speaking_end', {
+                    taskId: task.id,
+                    endedAt: Date.now()
+                });
             }
         }
     }
@@ -223,7 +270,26 @@ export class Agent {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    private emitEvent(event: string, data?: unknown) {
+        if (!this.eventEmitter) {
+            return;
+        }
+        try {
+            this.eventEmitter.broadcast(event, data);
+        } catch (error) {
+            this.logError('event.emit', '[Agent] Event emission failed', error);
+        }
+    }
+
     private async generateReply(msg: ChatMessage, type?: CommentType) {
+        this.emitEvent('thinking', {
+            mode: 'reply',
+            commentId: msg.id,
+            authorName: msg.authorName,
+            content: msg.content,
+            startedAt: Date.now()
+        });
+
         try {
             // Search for relevant memories with proper viewerId filtering
             let relevantMemories: any[] = [];
@@ -297,6 +363,12 @@ export class Agent {
         if (!currentSection) return;
 
         this.isGeneratingMonologue = true;
+        this.emitEvent('thinking', {
+            mode: 'monologue',
+            topic: currentState.title,
+            section: currentSection,
+            startedAt: Date.now()
+        });
         try {
             const prompt = this.promptManager.buildMonologuePrompt(currentState);
             const text = await this.llm.generateText(prompt);
@@ -332,6 +404,65 @@ export class Agent {
     private getRandomPreSpeechDelayMs(): number {
         const span = this.preSpeechDelayMaxMs - this.preSpeechDelayMinMs;
         return this.preSpeechDelayMinMs + Math.random() * span;
+    }
+
+    private estimateSpeechDurationMs(text: string, audioData?: Buffer): number {
+        const fallback = Math.max(1_200, Math.round(text.length * 90));
+        if (!audioData || audioData.length < 44) {
+            return fallback;
+        }
+
+        const wavDuration = this.getWavDurationMs(audioData);
+        if (wavDuration && Number.isFinite(wavDuration)) {
+            return wavDuration;
+        }
+
+        return fallback;
+    }
+
+    private getWavDurationMs(buffer: Buffer): number | null {
+        if (buffer.length < 44) {
+            return null;
+        }
+
+        if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+            return null;
+        }
+
+        let offset = 12;
+        let sampleRate = 0;
+        let bitsPerSample = 0;
+        let channels = 0;
+        let dataSize = 0;
+
+        while (offset + 8 <= buffer.length) {
+            const chunkId = buffer.toString('ascii', offset, offset + 4);
+            const chunkSize = buffer.readUInt32LE(offset + 4);
+            const chunkDataStart = offset + 8;
+
+            if (chunkId === 'fmt ') {
+                if (chunkSize >= 16 && chunkDataStart + 16 <= buffer.length) {
+                    channels = buffer.readUInt16LE(chunkDataStart + 2);
+                    sampleRate = buffer.readUInt32LE(chunkDataStart + 4);
+                    bitsPerSample = buffer.readUInt16LE(chunkDataStart + 14);
+                }
+            }
+
+            if (chunkId === 'data') {
+                dataSize = chunkSize;
+                break;
+            }
+
+            offset += 8 + chunkSize + (chunkSize % 2);
+        }
+
+        if (!sampleRate || !bitsPerSample || !channels || !dataSize) {
+            return null;
+        }
+
+        const bytesPerSample = bitsPerSample / 8;
+        const durationSeconds = dataSize / (sampleRate * channels * bytesPerSample);
+        return Math.max(0, Math.round(durationSeconds * 1000));
     }
 
     /**
