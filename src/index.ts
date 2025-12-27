@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { FileReplayAdapter, FileReplayAdapterConfig } from './adapters/FileReplayAdapter';
 import { YouTubeLiveAdapter, YouTubeLiveAdapterConfig } from './adapters/YouTubeLiveAdapter';
+import { VoicevoxService } from './services/VoicevoxService';
+import { MockTTSService } from './services/MockTTSService';
 import { IChatAdapter } from './interfaces';
 import { Agent } from './core/Agent';
 
@@ -8,6 +10,32 @@ type AdapterSetup = {
   adapter: IChatAdapter<any>;
   config: FileReplayAdapterConfig | YouTubeLiveAdapterConfig;
   label: string;
+};
+
+const resolveAdapterType = (): 'MOCK' | 'YOUTUBE' => {
+  const raw = process.env.CHAT_ADAPTER ?? 'MOCK';
+  const normalized = raw.trim().toUpperCase();
+  if (normalized === 'YOUTUBE') {
+    return 'YOUTUBE';
+  }
+  if (normalized !== 'MOCK') {
+    console.warn(`[System] Unknown CHAT_ADAPTER "${raw}", falling back to MOCK.`);
+  }
+  return 'MOCK';
+};
+
+const toNumber = (value: string | undefined, fallback: number): number => {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toBoolean = (value: string | undefined): boolean => {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes';
 };
 
 const adapterType = resolveAdapterType();
@@ -47,9 +75,10 @@ const setupAdapter = (): AdapterSetup => {
 const main = async () => {
   const dryRun = toBoolean(process.env.DRY_RUN);
   const { adapter, config, label } = setupAdapter();
+
+  let agent: Agent | null = null;
   let running = true;
   let shutdownStarted = false;
-  let agent: Agent | null = null;
 
   const shutdown = async () => {
     if (shutdownStarted) {
@@ -60,7 +89,7 @@ const main = async () => {
     console.log('\n[System] Shutting down...');
 
     if (agent) {
-      agent.stop();
+      await agent.stop();
     }
 
     try {
@@ -82,39 +111,12 @@ const main = async () => {
   }
 
   // Create and start Agent
-  agent = new Agent(adapter);
+  const useMockTTS = toBoolean(process.env.USE_MOCK_TTS);
+  const ttsService = useMockTTS ? new MockTTSService() : new VoicevoxService();
+
+  agent = new Agent(adapter, undefined, undefined, ttsService);
   await agent.start();
 };
-
-const toNumber = (value: string | undefined, fallback: number): number => {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const toBoolean = (value: string | undefined): boolean => {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};
-
-// Sleep utility inside Agent usage mostly, but we might keep it if needed elsewhere, 
-// though standard sleep was removed from main loop.
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-function resolveAdapterType(): 'MOCK' | 'YOUTUBE' {
-  const raw = process.env.CHAT_ADAPTER ?? 'MOCK';
-  const normalized = raw.trim().toUpperCase();
-  if (normalized === 'YOUTUBE') {
-    return 'YOUTUBE';
-  }
-  if (normalized !== 'MOCK') {
-    console.warn(`[System] Unknown CHAT_ADAPTER "${raw}", falling back to MOCK.`);
-  }
-  return 'MOCK';
-}
 
 main().catch((error) => {
   console.error('[System] Fatal error', error);

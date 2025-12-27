@@ -100,7 +100,7 @@ model Topic {
 
   // Topic content
   title       String
-  outline     Json?    // Array of sections (type-safe JSON)
+  outline     String?  // Array of sections (stored as JSON string)
 
   // Metadata
   sectionIndex Int     @default(0)
@@ -144,7 +144,7 @@ model Memory {
   lastSyncedAt DateTime?
 
   // Metadata (JSON for flexible data)
-  metadata    Json?    // Type-safe JSON object for additional context
+  metadata    String?  // JSON string for additional context
 
   // Indexes
   @@index([type])

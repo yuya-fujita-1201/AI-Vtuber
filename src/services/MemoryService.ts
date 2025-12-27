@@ -142,27 +142,32 @@ export class MemoryService {
           streamId,
           topicId,
           viewerId,
-          metadata: metadata as any, // Prisma Json type
+          metadata: metadata ? JSON.stringify(metadata) : undefined,
           lastSyncedAt: new Date(),
         },
       });
 
       // 3. Add to ChromaDB with embedding
       const vectorId = `memory_${memory.id}`;
+
+      // Sanitize metadata for ChromaDB (remove nulls)
+      const chromaMetadata: Record<string, any> = {
+        memoryId: memory.id,
+        type,
+        importance,
+        createdAt: memory.createdAt.toISOString(),
+        ...metadata,
+      };
+
+      if (streamId) chromaMetadata.streamId = streamId;
+      if (topicId) chromaMetadata.topicId = topicId;
+      if (viewerId) chromaMetadata.viewerId = viewerId;
+
       await this.collection.add({
         ids: [vectorId],
         embeddings: [embedding],
         documents: [content],
-        metadatas: [{
-          memoryId: memory.id,
-          type,
-          importance,
-          streamId: streamId || null,
-          topicId: topicId || null,
-          viewerId: viewerId || null,
-          createdAt: memory.createdAt.toISOString(),
-          ...metadata,
-        }],
+        metadatas: [chromaMetadata],
       });
 
       // 4. Update Prisma with vectorId
@@ -199,15 +204,23 @@ export class MemoryService {
       const queryEmbedding = await this.generateEmbedding(query);
 
       // Build where filter for ChromaDB
-      const whereFilter: Record<string, any> = {};
+      let whereFilter: Record<string, any> = {};
+      const conditions: Record<string, any>[] = [];
+
       if (filter?.type) {
-        whereFilter.type = filter.type;
+        conditions.push({ type: filter.type });
       }
       if (filter?.viewerId) {
-        whereFilter.viewerId = filter.viewerId;
+        conditions.push({ viewerId: filter.viewerId });
       }
       if (filter?.streamId) {
-        whereFilter.streamId = filter.streamId;
+        conditions.push({ streamId: filter.streamId });
+      }
+
+      if (conditions.length > 1) {
+        whereFilter = { $and: conditions };
+      } else if (conditions.length === 1) {
+        whereFilter = conditions[0];
       }
 
       // Query ChromaDB with embedding (more stable than queryTexts)
