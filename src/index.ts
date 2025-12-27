@@ -115,6 +115,11 @@ const main = async () => {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
+  console.log(`[System] Connecting adapter: ${label}`);
+  if (label === 'YouTubeLiveAdapter') {
+    const conf = config as any;
+    console.log(`[System] Config check - VideoID: ${conf.videoId}, APIKey (len): ${conf.apiKey?.length}`);
+  }
   await adapter.connect(config);
   console.log(`[System] Adapter ready: ${label}`);
   if (dryRun) {

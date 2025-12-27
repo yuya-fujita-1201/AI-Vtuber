@@ -94,13 +94,20 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
 
     if (config.videoId) {
       try {
+        console.log(`[YouTubeLiveAdapter] Resolving chat ID for video: "${config.videoId}"`);
         const response = await this.youtube.videos.list({
-          part: ['liveStreamingDetails'],
+          part: ['liveStreamingDetails', 'snippet'],
           id: [config.videoId]
         });
-        const liveDetails = response.data.items?.[0]?.liveStreamingDetails;
+        const items = response.data.items;
+        console.log(`[YouTubeLiveAdapter] API response items: ${items?.length ?? 0}`);
+
+        const liveDetails = items?.[0]?.liveStreamingDetails;
         if (liveDetails?.activeLiveChatId) {
+          console.log(`[YouTubeLiveAdapter] Found Chat ID: ${liveDetails.activeLiveChatId}`);
           return liveDetails.activeLiveChatId;
+        } else {
+          console.warn('[YouTubeLiveAdapter] No activeLiveChatId found in liveDetails:', JSON.stringify(liveDetails, null, 2));
         }
       } catch (error) {
         console.error('[YouTubeLiveAdapter] videos.list failed', error);
