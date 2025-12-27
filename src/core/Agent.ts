@@ -1,13 +1,15 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions, IVisualOutputAdapter } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
-import { EmotionEngine } from './EmotionEngine';
+import { EmotionEngine, EmotionState } from './EmotionEngine';
 import { IntentClassifier, IntentType } from './IntentClassifier';
 import { OpenAIService } from '../services/OpenAIService';
 import { VoicevoxService } from '../services/VoicevoxService';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
 import { MemoryService, MemoryType } from '../services/MemoryService';
+import { LipSyncService } from '../services/LipSyncService';
+import { ExpressionService } from '../services/ExpressionService';
 import { prisma } from '../lib/prisma';
 
 type AgentOptions = {
@@ -17,6 +19,9 @@ type AgentOptions = {
     audioPlayer?: IAudioPlayer;
     memoryService?: MemoryService;
     eventEmitter?: IAgentEventEmitter;
+    visualAdapter?: IVisualOutputAdapter;
+    lipSyncService?: LipSyncService;
+    expressionService?: ExpressionService;
 };
 
 export class Agent {
@@ -29,12 +34,16 @@ export class Agent {
     private promptManager: PromptManager;
     private memoryService?: MemoryService;
     private eventEmitter?: IAgentEventEmitter;
+    private visualAdapter?: IVisualOutputAdapter;
+    private lipSyncService?: LipSyncService;
+    private expressionService?: ExpressionService;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
     private currentStreamId?: string;
     private emotionEngine: EmotionEngine;
     private intentClassifier: IntentClassifier;
     private currentVoiceOptions: TTSOptions;
+    private currentEmotion: EmotionState = EmotionState.NEUTRAL;
     private recentComments: ChatMessage[] = [];
     private readonly recentCommentLimit = 20;
 
@@ -58,7 +67,10 @@ export class Agent {
             ttsService = new VoicevoxService(),
             audioPlayer = new AudioPlayer(),
             memoryService,
-            eventEmitter
+            eventEmitter,
+            visualAdapter,
+            lipSyncService,
+            expressionService
         } = options;
 
         this.adapter = adapter;
@@ -72,6 +84,9 @@ export class Agent {
         this.audioPlayer = audioPlayer;
         this.memoryService = memoryService;
         this.eventEmitter = eventEmitter;
+        this.visualAdapter = visualAdapter;
+        this.lipSyncService = lipSyncService;
+        this.expressionService = expressionService;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
         this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
@@ -158,11 +173,26 @@ export class Agent {
             }
 
             const history = this.recentComments.map(item => item.content);
+            const previousEmotion = this.currentEmotion;
             const emotionUpdate = this.emotionEngine.update(msg.content, history);
             this.currentVoiceOptions = { ...emotionUpdate.voice };
             if (emotionUpdate.changed) {
                 console.log(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
                 console.log(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
+
+                this.currentEmotion = emotionUpdate.state;
+
+                this.emitEvent('emotion_changed', {
+                    state: emotionUpdate.state,
+                    previousState: previousEmotion,
+                    timestamp: Date.now()
+                });
+
+                if (this.expressionService) {
+                    this.expressionService.onEmotionChanged(emotionUpdate.state).catch(err =>
+                        console.warn('[Agent] Expression change failed', err)
+                    );
+                }
             }
             this.pushRecentComment(msg);
 
@@ -287,10 +317,20 @@ export class Agent {
             });
 
             try {
+                if (this.lipSyncService && audioData) {
+                    this.lipSyncService.startSync(audioData).catch(err =>
+                        console.warn('[Agent] Lip sync start failed', err)
+                    );
+                }
+
                 await this.audioPlayer.play(audioData);
             } catch (error) {
                 this.logError('audio.play', '[Agent] Audio playback failed', error);
             } finally {
+                if (this.lipSyncService) {
+                    this.lipSyncService.cancelSync();
+                }
+
                 this.emitEvent('speaking_end', {
                     taskId: task.id,
                     endedAt: Date.now()

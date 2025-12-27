@@ -101,3 +101,11 @@ export interface SpeechTask {
 export interface IAgentEventEmitter {
   broadcast(event: string, data?: unknown): void;
 }
+
+export interface IVisualOutputAdapter {
+  connect(config: unknown): Promise<void>;
+  disconnect(): Promise<void>;
+  isConnected(): boolean;
+  setParameter(paramId: string, value: number): Promise<void>;
+  triggerHotkey(hotkeyId: string): Promise<void>;
+}

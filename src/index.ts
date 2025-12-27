@@ -134,7 +134,60 @@ const main = async () => {
   await webServer.start(webPort);
   console.log(`[System] Web server running at http://localhost:${webPort}`);
 
-  agent = new Agent(adapter, { eventEmitter: webServer, ttsService });
+  // VTube Studio integration
+  const useVTS = toBoolean(process.env.VTS_ENABLED);
+  let vtsAdapter;
+  let lipSyncService;
+  let expressionService;
+
+  if (useVTS) {
+    const { VTubeStudioAdapter } = await import('./adapters/VTubeStudioAdapter');
+    const { LipSyncService } = await import('./services/LipSyncService');
+    const { ExpressionService } = await import('./services/ExpressionService');
+    const { EmotionState } = await import('./core/EmotionEngine');
+
+    vtsAdapter = new VTubeStudioAdapter();
+
+    try {
+      await vtsAdapter.connect({
+        host: process.env.VTS_HOST || 'localhost',
+        port: toNumber(process.env.VTS_PORT, 8001),
+        authToken: process.env.VTS_AUTH_TOKEN
+      });
+      console.log('[System] VTube Studio adapter connected');
+
+      lipSyncService = new LipSyncService(vtsAdapter, {
+        volumeScale: toNumber(process.env.VTS_VOLUME_SCALE, 1.5)
+      });
+
+      expressionService = new ExpressionService(vtsAdapter, {
+        hotkeyMap: {
+          [EmotionState.NEUTRAL]: process.env.VTS_HOTKEY_NEUTRAL || '',
+          [EmotionState.HAPPY]: process.env.VTS_HOTKEY_HAPPY || '',
+          [EmotionState.SAD]: process.env.VTS_HOTKEY_SAD || '',
+          [EmotionState.ANGRY]: process.env.VTS_HOTKEY_ANGRY || '',
+          [EmotionState.EXCITED]: process.env.VTS_HOTKEY_EXCITED || ''
+        },
+        debounceMs: 500
+      });
+
+      console.log('[System] VTube Studio services initialized');
+    } catch (error) {
+      console.error('[System] VTube Studio connection failed:', error);
+      console.warn('[System] Continuing without VTube Studio integration');
+      vtsAdapter = undefined;
+      lipSyncService = undefined;
+      expressionService = undefined;
+    }
+  }
+
+  agent = new Agent(adapter, {
+    eventEmitter: webServer,
+    ttsService,
+    visualAdapter: vtsAdapter,
+    lipSyncService,
+    expressionService
+  });
   await agent.start();
 };
 
