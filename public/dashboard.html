@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Vtuber Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=M+PLUS+Rounded+1c:wght@400;600;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body class="dashboard">
+    <div class="dashboard-shell">
+      <header class="dashboard-header">
+        <div>
+          <h1>AI Vtuber Live Console</h1>
+          <p>Realtime status, subtitle preview, and event stream.</p>
+        </div>
+        <div class="status-pill" id="dashboard-status" data-state="connecting">Connecting</div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-title">Current Speech</div>
+        <div class="subtitle-preview" id="dashboard-subtitle">Waiting for speech...</div>
+        <div class="subtitle-meta" id="dashboard-meta">No active speech.</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Event Log</div>
+        <div class="log" id="dashboard-log"></div>
+      </section>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      (() => {
+        const statusEl = document.getElementById('dashboard-status');
+        const subtitleEl = document.getElementById('dashboard-subtitle');
+        const metaEl = document.getElementById('dashboard-meta');
+        const logEl = document.getElementById('dashboard-log');
+
+        let state = 'connecting';
+
+        const labels = {
+          connecting: 'Connecting',
+          listening: 'Listening',
+          thinking: 'Thinking',
+          speaking: 'Speaking'
+        };
+
+        const setState = (next) => {
+          state = next;
+          statusEl.textContent = labels[next] || next;
+          statusEl.dataset.state = next;
+        };
+
+        const addLog = (event, payload) => {
+          const time = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.className = 'log-line';
+          const summary = payload ? JSON.stringify(payload).slice(0, 180) : '';
+          line.innerHTML = `<span>${time} · ${event}</span>${summary}`;
+          logEl.appendChild(line);
+          while (logEl.children.length > 60) {
+            logEl.removeChild(logEl.firstChild);
+          }
+          logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        const socket = io();
+
+        socket.on('connect', () => {
+          setState('listening');
+          addLog('connected', { id: socket.id });
+        });
+
+        socket.on('disconnect', () => {
+          setState('connecting');
+          addLog('disconnected', null);
+        });
+
+        socket.on('comment', (payload) => {
+          if (state !== 'speaking' && state !== 'thinking') {
+            setState('listening');
+          }
+          addLog('comment', {
+            author: payload?.message?.authorName,
+            content: payload?.message?.content
+          });
+        });
+
+        socket.on('thinking', (payload) => {
+          if (state !== 'speaking') {
+            setState('thinking');
+          }
+          addLog('thinking', payload);
+        });
+
+        socket.on('speaking_start', (payload) => {
+          setState('speaking');
+          subtitleEl.textContent = payload?.text || '';
+          metaEl.textContent = `Duration: ${Math.round((payload?.durationMs || 0) / 100) / 10}s`;
+          addLog('speaking_start', {
+            text: payload?.text,
+            durationMs: payload?.durationMs
+          });
+        });
+
+        socket.on('speaking_end', () => {
+          setState('listening');
+          subtitleEl.textContent = 'Waiting for speech...';
+          metaEl.textContent = 'No active speech.';
+          addLog('speaking_end', null);
+        });
+      })();
+    </script>
+  </body>
+</html>

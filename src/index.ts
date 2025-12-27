@@ -3,6 +3,7 @@ import { FileReplayAdapter, FileReplayAdapterConfig } from './adapters/FileRepla
 import { YouTubeLiveAdapter, YouTubeLiveAdapterConfig } from './adapters/YouTubeLiveAdapter';
 import { IChatAdapter } from './interfaces';
 import { Agent } from './core/Agent';
+import { WebServer } from './server/WebServer';
 
 type AdapterSetup = {
   adapter: IChatAdapter<any>;
@@ -46,10 +47,12 @@ const setupAdapter = (): AdapterSetup => {
 
 const main = async () => {
   const dryRun = toBoolean(process.env.DRY_RUN);
+  const webPort = toNumber(process.env.WEB_PORT ?? process.env.PORT, 3000);
   const { adapter, config, label } = setupAdapter();
   let running = true;
   let shutdownStarted = false;
   let agent: Agent | null = null;
+  let webServer: WebServer | null = null;
 
   const shutdown = async () => {
     if (shutdownStarted) {
@@ -61,6 +64,14 @@ const main = async () => {
 
     if (agent) {
       agent.stop();
+    }
+
+    if (webServer) {
+      try {
+        await webServer.stop();
+      } catch (error) {
+        console.error('[System] Web server shutdown error', error);
+      }
     }
 
     try {
@@ -82,7 +93,11 @@ const main = async () => {
   }
 
   // Create and start Agent
-  agent = new Agent(adapter);
+  webServer = new WebServer();
+  await webServer.start(webPort);
+  console.log(`[System] Web server running at http://localhost:${webPort}`);
+
+  agent = new Agent(adapter, { eventEmitter: webServer });
   await agent.start();
 };
 
