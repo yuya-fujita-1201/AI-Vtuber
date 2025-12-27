@@ -79,7 +79,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
         this.handleMessage(data);
       });
 
-      this.ws.on('error', (error) => {
+      this.ws.on('error', (error: Error) => {
         console.error('[VTS] WebSocket error:', error);
         if (!this.connected) {
           reject(error);
