@@ -573,7 +573,7 @@ export class Agent {
 
             // Build consolidation prompt
             const messagesSummary = stream.messages
-                .map(m => `- ${m.authorName}: ${m.content}`)
+                .map((m: any) => `- ${m.authorName}: ${m.content}`)
                 .join('\n');
 
             const consolidationPrompt = {
