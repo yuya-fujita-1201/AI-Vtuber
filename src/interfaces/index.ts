@@ -23,6 +23,14 @@ export interface IChatAdapter<TConfig = Record<string, unknown>> {
   disconnect(): Promise<void> | void;
 }
 
+export type TTSOptions = {
+  speakerId?: number;
+  speaker?: number;
+  pitch?: number;
+  speed?: number;
+  intonation?: number;
+};
+
 export interface ITTSService {
   /**
    * テキストから音声データを生成する
@@ -30,7 +38,7 @@ export interface ITTSService {
    * @param options 声質などのオプション
    * @returns 音声バイナリデータ (wav/mp3)
    */
-  synthesize(text: string, options?: Record<string, unknown>): Promise<Buffer>;
+  synthesize(text: string, options?: TTSOptions): Promise<Buffer>;
 
   /**
    * サービスの生存確認
@@ -87,6 +95,7 @@ export interface SpeechTask {
   priority: 'HIGH' | 'NORMAL' | 'LOW';
   sourceCommentId?: string;
   timestamp: number;
+  ttsOptions?: TTSOptions;
 }
 
 export interface IAgentEventEmitter {

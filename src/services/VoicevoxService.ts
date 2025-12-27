@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { ITTSService } from '../interfaces';
+import { ITTSService, TTSOptions } from '../interfaces';
 
 export class VoicevoxService implements ITTSService {
     private client: AxiosInstance;
@@ -23,7 +23,7 @@ export class VoicevoxService implements ITTSService {
         }
     }
 
-    public async synthesize(text: string, options?: Record<string, unknown>): Promise<Buffer> {
+    public async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
         if (!text) return Buffer.alloc(0);
         if (this.isDryRun) return Buffer.alloc(0);
 
@@ -38,6 +38,7 @@ export class VoicevoxService implements ITTSService {
             });
 
             const queryData = queryResponse.data;
+            this.applyVoiceOptions(queryData, options);
             const synthesisResponse = await this.client.post('/synthesis', queryData, {
                 params: { speaker: overrideSpeaker },
                 responseType: 'arraybuffer'
@@ -62,7 +63,7 @@ export class VoicevoxService implements ITTSService {
         }
     }
 
-    private resolveSpeaker(options?: Record<string, unknown>): number {
+    private resolveSpeaker(options?: TTSOptions): number {
         if (!options) return this.speakerId;
 
         const candidate = options.speakerId ?? options.speaker;
@@ -78,6 +79,22 @@ export class VoicevoxService implements ITTSService {
         }
 
         return this.speakerId;
+    }
+
+    private applyVoiceOptions(queryData: Record<string, any>, options?: TTSOptions): void {
+        if (!options) return;
+
+        if (typeof options.pitch === 'number' && Number.isFinite(options.pitch)) {
+            queryData.pitchScale = options.pitch;
+        }
+
+        if (typeof options.speed === 'number' && Number.isFinite(options.speed)) {
+            queryData.speedScale = options.speed;
+        }
+
+        if (typeof options.intonation === 'number' && Number.isFinite(options.intonation)) {
+            queryData.intonationScale = options.intonation;
+        }
     }
 }
 

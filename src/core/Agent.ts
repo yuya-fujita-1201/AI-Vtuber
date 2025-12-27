@@ -1,6 +1,8 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
+import { EmotionEngine } from './EmotionEngine';
+import { IntentClassifier, IntentType } from './IntentClassifier';
 import { OpenAIService } from '../services/OpenAIService';
 import { VoicevoxService } from '../services/VoicevoxService';
 import { AudioPlayer } from '../services/AudioPlayer';
@@ -30,6 +32,11 @@ export class Agent {
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
     private currentStreamId?: string;
+    private emotionEngine: EmotionEngine;
+    private intentClassifier: IntentClassifier;
+    private currentVoiceOptions: TTSOptions;
+    private recentComments: ChatMessage[] = [];
+    private readonly recentCommentLimit = 20;
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
@@ -57,6 +64,8 @@ export class Agent {
         this.adapter = adapter;
         this.spine = new TopicSpine();
         this.router = new CommentRouter();
+        this.emotionEngine = new EmotionEngine();
+        this.intentClassifier = new IntentClassifier();
         this.llm = llmService;
         this.promptManager = promptManager;
         this.tts = ttsService;
@@ -64,6 +73,7 @@ export class Agent {
         this.memoryService = memoryService;
         this.eventEmitter = eventEmitter;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
     }
 
@@ -138,6 +148,24 @@ export class Agent {
         for (const msg of newMessages) {
             this.emitEvent('comment', { message: msg, receivedAt: Date.now() });
 
+            const intent = this.intentClassifier.classify(msg.content);
+            const isShort = this.isShortComment(msg.content);
+
+            if (intent === IntentType.SPAM || (isShort && !this.hasExclamation(msg.content))) {
+                await this.storeMessage(msg, CommentType.IGNORE);
+                console.log(`[Agent] Skipping comment (intent=${intent}, length=${msg.content.trim().length}).`);
+                continue;
+            }
+
+            const history = this.recentComments.map(item => item.content);
+            const emotionUpdate = this.emotionEngine.update(msg.content, history);
+            this.currentVoiceOptions = { ...emotionUpdate.voice };
+            if (emotionUpdate.changed) {
+                console.log(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
+                console.log(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
+            }
+            this.pushRecentComment(msg);
+
             let type: CommentType = CommentType.IGNORE;
             try {
                 type = await this.router.classify(msg, this.spine.currentState);
@@ -150,7 +178,7 @@ export class Agent {
             await this.storeMessage(msg, type);
 
             let responseText = '';
-            let priority: 'HIGH' | 'NORMAL' = 'NORMAL';
+            let priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL';
 
             switch (type) {
                 case CommentType.ON_TOPIC:
@@ -170,8 +198,12 @@ export class Agent {
                     break;
             }
 
+            if (intent === IntentType.QUESTION) {
+                priority = 'HIGH';
+            }
+
             if (responseText) {
-                this.enqueueSpeech(responseText, priority, msg.id);
+                this.enqueueSpeech(responseText, priority, msg.id, this.currentVoiceOptions);
             }
         }
 
@@ -188,13 +220,14 @@ export class Agent {
         await this.processQueue();
     }
 
-    private enqueueSpeech(text: string, priority: 'HIGH' | 'NORMAL' | 'LOW', sourceCommentId?: string) {
+    private enqueueSpeech(text: string, priority: 'HIGH' | 'NORMAL' | 'LOW', sourceCommentId?: string, ttsOptions?: TTSOptions) {
         const task: SpeechTask = {
             id: Date.now().toString() + Math.random().toString().slice(2),
             text,
             priority,
             sourceCommentId,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            ttsOptions
         };
         this.speechQueue.push(task);
         // 簡易的にPriority順でソート (HIGHが先頭)
@@ -213,7 +246,7 @@ export class Agent {
 
             let audioData: Buffer;
             try {
-                audioData = await this.tts.synthesize(task.text);
+                audioData = await this.tts.synthesize(task.text, task.ttsOptions);
             } catch (error) {
                 this.logError('tts.synthesize', '[Agent] TTS synthesize failed', error);
                 continue;
@@ -373,7 +406,7 @@ export class Agent {
             const prompt = this.promptManager.buildMonologuePrompt(currentState);
             const text = await this.llm.generateText(prompt);
             if (text.trim()) {
-                this.enqueueSpeech(text, 'NORMAL');
+                this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
                 this.spine.getNextSection();
             }
             this.lastMonologueAt = Date.now();
@@ -391,8 +424,23 @@ export class Agent {
 
         const responseText = await this.generateReply(pending, CommentType.OFF_TOPIC);
         if (responseText) {
-            this.enqueueSpeech(responseText, 'NORMAL', pending.id);
+            this.enqueueSpeech(responseText, 'NORMAL', pending.id, this.currentVoiceOptions);
         }
+    }
+
+    private pushRecentComment(msg: ChatMessage) {
+        this.recentComments.push(msg);
+        if (this.recentComments.length > this.recentCommentLimit) {
+            this.recentComments.splice(0, this.recentComments.length - this.recentCommentLimit);
+        }
+    }
+
+    private isShortComment(content: string): boolean {
+        return content.trim().length < 3;
+    }
+
+    private hasExclamation(content: string): boolean {
+        return /[!！]/.test(content);
     }
 
     private getRandomMonologueIntervalMs(): number {
