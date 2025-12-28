@@ -81,6 +81,22 @@ export enum CommentType {
   IGNORE = 'IGNORE'
 }
 
+export type NarrativePhase = 'Casual Opening' | 'Deep Dive' | 'Heated Debate' | 'Cozy Closing';
+
+export type ConversationVibe = 'CALM' | 'EXCITED' | 'HEATED' | 'COZY';
+
+export interface NarrativeContext {
+  theme: string;
+  arcPhase: NarrativePhase;
+  vibe: ConversationVibe;
+  topicDepth: number;
+  goldenComment?: {
+    authorName: string;
+    content: string;
+  };
+  twist?: string;
+}
+
 export interface TopicState {
   currentTopicId: string;
   title: string;

@@ -1,12 +1,24 @@
 import fs from 'fs';
 import path from 'path';
-import { ChatMessage, LLMRequest, TopicState } from '../interfaces';
+import { ChatMessage, ConversationVibe, LLMRequest, NarrativeContext, NarrativePhase, TopicState } from '../interfaces';
 import { SearchMemoryResult } from '../services/MemoryService';
 import { getSystemPrompt, AGENT_NAME } from '../prompts/system_prompt';
 
 const DEFAULT_MONOLOGUE_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n視聴者に楽しく、わかりやすく話してください。\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n- 完了したアウトライン:\n{{completedOutline}}\n- 残りのアウトライン:\n{{remainingOutline}}\n\n制約:\n- 1〜3文の自然な独り言で話す\n- 具体例や軽い感想を入れる\n- 口調は配信者らしく、明るく短め\n- 出力は本文のみ`;
 
 const DEFAULT_REPLY_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n質問でも雑談でも、リスナーコメントに対して明るく丁寧に短く返答してください。\n\n## Listener Comment\n- Author: {{commentAuthor}}\n- Comment: {{commentContent}}\n- Timestamp: {{commentTimestamp}}\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n\n制約:\n- 1〜2文で返答\n- 質問には簡潔に答え、雑談には相槌や共感を添える\n- コメントに直接触れる\n- 出力は本文のみ`;
+
+export type NarrativePromptInput = {
+    mode: 'TWIST' | 'SUMMARY';
+    theme: string;
+    arcPhase: NarrativePhase;
+    vibe: ConversationVibe;
+    goldenComment?: {
+        authorName: string;
+        content: string;
+    };
+    recentComments?: ChatMessage[];
+};
 
 export class PromptManager {
     private monologueTemplate: string;
@@ -17,12 +29,12 @@ export class PromptManager {
         this.replyTemplate = this.loadTemplate('prompts/reply.md', DEFAULT_REPLY_PROMPT);
     }
 
-    public buildMonologuePrompt(topic: TopicState): LLMRequest {
+    public buildMonologuePrompt(topic: TopicState, narrative?: NarrativeContext): LLMRequest {
         const replacements = this.buildTopicReplacements(topic);
         const baseTemplate = this.renderTemplate(this.monologueTemplate, replacements);
 
         // Build structured system prompt
-        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, topic);
+        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, topic, [], undefined, narrative);
 
         return {
             systemPrompt,
@@ -39,7 +51,8 @@ export class PromptManager {
     public buildReplyPrompt(
         comment: ChatMessage,
         context: TopicState,
-        memories: SearchMemoryResult[] = []
+        memories: SearchMemoryResult[] = [],
+        narrative?: NarrativeContext
     ): LLMRequest {
         const replacements = {
             ...this.buildTopicReplacements(context),
@@ -50,7 +63,7 @@ export class PromptManager {
         const baseTemplate = this.renderTemplate(this.replyTemplate, replacements);
 
         // Build structured system prompt with memories
-        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, context, memories, comment);
+        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, context, memories, comment, narrative);
 
         return {
             systemPrompt,
@@ -109,7 +122,8 @@ export class PromptManager {
         baseTemplate: string,
         context: TopicState,
         memories: SearchMemoryResult[] = [],
-        comment?: ChatMessage
+        comment?: ChatMessage,
+        narrative?: NarrativeContext
     ): string {
         const sections: string[] = [];
 
@@ -138,6 +152,21 @@ export class PromptManager {
         }
         sections.push('');
 
+        // 2.5 Narrative context: current conversation theme to prevent drifting
+        sections.push('# 会話テーマ (NARRATIVE)');
+        sections.push(`**現在の会話テーマ**: ${narrative?.theme ?? '（未設定）'}`);
+        sections.push(`**ナラティブアーク**: ${narrative?.arcPhase ?? '（未設定）'}`);
+        sections.push(`**チャットの雰囲気**: ${narrative?.vibe ?? '（未設定）'}`);
+        sections.push(`**話題の深さ**: ${narrative?.topicDepth ?? 0}`);
+        sections.push('**指針**: このテーマを深掘りし、話題が逸れすぎないように会話を導く。');
+        if (narrative?.goldenComment) {
+            sections.push(`**ゴールデンコメント**: ${narrative.goldenComment.authorName}「${narrative.goldenComment.content}」`);
+        }
+        if (narrative?.twist) {
+            sections.push(`**ツイスト候補**: ${narrative.twist}`);
+        }
+        sections.push('');
+
         // 3. MEMORIES: Retrieved relevant memories (if any)
         if (memories.length > 0) {
             sections.push('# 関連する記憶 (MEMORIES)');
@@ -159,6 +188,43 @@ export class PromptManager {
         sections.push(baseTemplate);
 
         return sections.join('\n');
+    }
+
+    public buildNarrativePrompt(input: NarrativePromptInput): LLMRequest {
+        const recentLines = (input.recentComments ?? [])
+            .slice(-6)
+            .map(comment => `- ${comment.authorName}: ${comment.content}`)
+            .join('\n');
+
+        const goldenLine = input.goldenComment
+            ? `${input.goldenComment.authorName}: ${input.goldenComment.content}`
+            : '（なし）';
+
+        const systemPrompt = [
+            '# システム設定 (SYSTEM)',
+            getSystemPrompt(),
+            '',
+            '# ストーリー監督 (DIRECTOR)',
+            `テーマ: ${input.theme}`,
+            `ナラティブアーク: ${input.arcPhase}`,
+            `チャットの雰囲気: ${input.vibe}`,
+            `ゴールデンコメント: ${goldenLine}`,
+            '',
+            '# 直近コメント (CONTEXT)',
+            recentLines || '（なし）',
+            ''
+        ].join('\n');
+
+        const userPrompt = input.mode === 'TWIST'
+            ? '話題を深掘りするための「意外な視点」か「賛否が分かれる一言」を1文で提案してください。配信者らしく短く。'
+            : '今の話題のポイントを2-3文でやさしくまとめ、次の話題に自然に移れる締めコメントを作ってください。';
+
+        return {
+            systemPrompt,
+            userPrompt,
+            temperature: 0.7,
+            maxTokens: 400
+        };
     }
 
     /**

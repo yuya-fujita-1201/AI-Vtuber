@@ -45,6 +45,15 @@ export class StageService {
     await this.adapter.switchScene(target);
   }
 
+  public async transitionToEnding(): Promise<void> {
+    if (!this.config.sceneEnding) {
+      console.warn('[Stage] No ending scene configured');
+      return;
+    }
+
+    await this.adapter.switchScene(this.config.sceneEnding);
+  }
+
   public async onSectionChanged(section: string): Promise<void> {
     if (!section || section === this.lastSection) {
       return;

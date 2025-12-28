@@ -1,4 +1,4 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions, IVisualOutputAdapter } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions, IVisualOutputAdapter, NarrativeContext } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
 import { CommentRouter } from './CommentRouter';
 import { EmotionEngine, EmotionState } from './EmotionEngine';
@@ -11,6 +11,7 @@ import { MemoryService, MemoryType } from '../services/MemoryService';
 import { LipSyncService } from '../services/LipSyncService';
 import { ExpressionService } from '../services/ExpressionService';
 import { StageService } from '../services/StageService';
+import { StorytellingService, StorytellingUpdate } from '../services/StorytellingService';
 import { prisma } from '../lib/prisma';
 
 type AgentOptions = {
@@ -24,6 +25,7 @@ type AgentOptions = {
     lipSyncService?: LipSyncService;
     expressionService?: ExpressionService;
     stageService?: StageService;
+    storytellingService?: StorytellingService;
 };
 
 export class Agent {
@@ -40,6 +42,7 @@ export class Agent {
     private lipSyncService?: LipSyncService;
     private expressionService?: ExpressionService;
     private stageService?: StageService;
+    private storytellingService?: StorytellingService;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
     private currentStreamId?: string;
@@ -47,6 +50,7 @@ export class Agent {
     private intentClassifier: IntentClassifier;
     private currentVoiceOptions: TTSOptions;
     private currentEmotion: EmotionState = EmotionState.NEUTRAL;
+    private narrativeContext?: NarrativeContext;
     private recentComments: ChatMessage[] = [];
     private readonly recentCommentLimit = 20;
 
@@ -74,7 +78,8 @@ export class Agent {
             visualAdapter,
             lipSyncService,
             expressionService,
-            stageService
+            stageService,
+            storytellingService
         } = options;
 
         this.adapter = adapter;
@@ -92,6 +97,10 @@ export class Agent {
         this.lipSyncService = lipSyncService;
         this.expressionService = expressionService;
         this.stageService = stageService;
+        this.storytellingService = storytellingService ?? new StorytellingService({
+            llmService: this.llm,
+            promptManager: this.promptManager
+        });
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
         this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
@@ -206,34 +215,25 @@ export class Agent {
                 }
             }
 
+            if (this.storytellingService) {
+                const commandResult = this.storytellingService.handleCommand(msg.content);
+                if (commandResult.handled) {
+                    await this.storeMessage(msg, CommentType.IGNORE);
+                    if (commandResult.theme) {
+                        this.syncStoryTheme(commandResult.theme);
+                        this.narrativeContext = this.storytellingService.getNarrativeContext();
+                    }
+                    if (commandResult.acknowledgment) {
+                        this.enqueueSpeech(commandResult.acknowledgment, 'HIGH', msg.id, this.currentVoiceOptions);
+                    }
+                    continue;
+                }
+            }
+
             const history = this.recentComments.map(item => item.content);
             const previousEmotion = this.currentEmotion;
             const emotionUpdate = this.emotionEngine.update(msg.content, history);
-            this.currentVoiceOptions = { ...emotionUpdate.voice };
-            if (emotionUpdate.changed) {
-                console.log(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
-                console.log(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
-
-                this.currentEmotion = emotionUpdate.state;
-
-                this.emitEvent('emotion_changed', {
-                    state: emotionUpdate.state,
-                    previousState: previousEmotion,
-                    timestamp: Date.now()
-                });
-
-                if (this.expressionService) {
-                    this.expressionService.onEmotionChanged(emotionUpdate.state).catch(err =>
-                        console.warn('[Agent] Expression change failed', err)
-                    );
-                }
-
-                if (this.stageService) {
-                    this.stageService.onEmotionChanged(emotionUpdate.state).catch(err =>
-                        console.warn('[Agent] Stage emotion change failed', err)
-                    );
-                }
-            }
+            this.applyEmotionUpdate(emotionUpdate, previousEmotion);
             this.pushRecentComment(msg);
 
             let type: CommentType = CommentType.IGNORE;
@@ -247,25 +247,50 @@ export class Agent {
             // Store message in database
             await this.storeMessage(msg, type);
 
+            let storyUpdate: StorytellingUpdate | undefined;
+            if (this.storytellingService) {
+                storyUpdate = await this.storytellingService.observeComment(msg, {
+                    type,
+                    recentComments: this.recentComments
+                });
+                this.narrativeContext = storyUpdate.narrative;
+                if (storyUpdate.themeChanged) {
+                    this.syncStoryTheme(storyUpdate.narrative.theme, storyUpdate.themeLockedUntil);
+                }
+                if (storyUpdate.emotionLock) {
+                    const previous = this.currentEmotion;
+                    const lockUpdate = this.emotionEngine.lockState(
+                        storyUpdate.emotionLock.state,
+                        storyUpdate.emotionLock.durationMs
+                    );
+                    this.applyEmotionUpdate(lockUpdate, previous);
+                }
+            }
+
             let responseText = '';
             let priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL';
 
-            switch (type) {
-                case CommentType.ON_TOPIC:
-                    responseText = await this.generateReply(msg, type);
-                    priority = 'HIGH';
-                    break;
-                case CommentType.REACTION:
-                    responseText = `（リアクションありがとうございます！）`;
-                    priority = 'HIGH';
-                    break;
-                case CommentType.OFF_TOPIC:
-                    this.pendingComments.push(msg);
-                    break;
-                case CommentType.CHANGE_REQ:
-                    responseText = `（話題変更のリクエストを受け付けました）`;
-                    priority = 'HIGH';
-                    break;
+            if (storyUpdate?.summary) {
+                responseText = storyUpdate.summary;
+                priority = 'HIGH';
+            } else {
+                switch (type) {
+                    case CommentType.ON_TOPIC:
+                        responseText = await this.generateReply(msg, type);
+                        priority = 'HIGH';
+                        break;
+                    case CommentType.REACTION:
+                        responseText = `（リアクションありがとうございます！）`;
+                        priority = 'HIGH';
+                        break;
+                    case CommentType.OFF_TOPIC:
+                        this.pendingComments.push(msg);
+                        break;
+                    case CommentType.CHANGE_REQ:
+                        responseText = `（話題変更のリクエストを受け付けました）`;
+                        priority = 'HIGH';
+                        break;
+                }
             }
 
             if (intent === IntentType.QUESTION) {
@@ -394,6 +419,36 @@ export class Agent {
         }
     }
 
+    private applyEmotionUpdate(emotionUpdate: { state: EmotionState; voice: TTSOptions; changed: boolean }, previousEmotion: EmotionState) {
+        this.currentVoiceOptions = { ...emotionUpdate.voice };
+        if (emotionUpdate.changed) {
+            console.log(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
+            console.log(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
+
+            this.currentEmotion = emotionUpdate.state;
+
+            this.emitEvent('emotion_changed', {
+                state: emotionUpdate.state,
+                previousState: previousEmotion,
+                timestamp: Date.now()
+            });
+
+            if (this.expressionService) {
+                this.expressionService.onEmotionChanged(emotionUpdate.state).catch(err =>
+                    console.warn('[Agent] Expression change failed', err)
+                );
+            }
+
+            if (this.stageService) {
+                this.stageService.onEmotionChanged(emotionUpdate.state).catch(err =>
+                    console.warn('[Agent] Stage emotion change failed', err)
+                );
+            }
+        } else {
+            this.currentEmotion = emotionUpdate.state;
+        }
+    }
+
     private async generateReply(msg: ChatMessage, type?: CommentType) {
         this.emitEvent('thinking', {
             mode: 'reply',
@@ -454,7 +509,8 @@ export class Agent {
             const prompt = this.promptManager.buildReplyPrompt(
                 msg,
                 this.spine.currentState,
-                relevantMemories
+                relevantMemories,
+                this.narrativeContext
             );
 
             const text = await this.llm.generateText(prompt);
@@ -483,7 +539,7 @@ export class Agent {
             startedAt: Date.now()
         });
         try {
-            const prompt = this.promptManager.buildMonologuePrompt(currentState);
+            const prompt = this.promptManager.buildMonologuePrompt(currentState, this.narrativeContext);
             const text = await this.llm.generateText(prompt);
             if (text.trim()) {
                 this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
@@ -518,6 +574,21 @@ export class Agent {
         if (this.recentComments.length > this.recentCommentLimit) {
             this.recentComments.splice(0, this.recentComments.length - this.recentCommentLimit);
         }
+    }
+
+    private syncStoryTheme(theme: string, lockUntil?: number) {
+        if (!this.storytellingService || !theme) {
+            return;
+        }
+
+        const outline = this.storytellingService.getNarrativeOutline(theme);
+        this.spine.update({
+            currentTopicId: `story-${Date.now()}`,
+            title: theme,
+            outline,
+            currentSectionIndex: 0,
+            lockUntil: lockUntil ?? 0
+        });
     }
 
     private isShortComment(content: string): boolean {
