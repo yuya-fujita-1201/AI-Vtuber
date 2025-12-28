@@ -29,6 +29,8 @@ export class EmotionEngine {
     private state: EmotionState = EmotionState.NEUTRAL;
     private moodScore = 0;
     private readonly decay = 0.6;
+    private overrideState?: EmotionState;
+    private overrideUntil?: number;
 
     private readonly voiceMap: Record<EmotionState, VoiceSettings> = {
         [EmotionState.NEUTRAL]: { pitch: 0, speed: 1.0, intonation: 1.0 },
@@ -39,6 +41,23 @@ export class EmotionEngine {
     };
 
     public update(comment: string, history: string[] = []): EmotionUpdate {
+        const now = Date.now();
+        if (this.overrideState && this.overrideUntil && now < this.overrideUntil) {
+            const changed = this.state !== this.overrideState;
+            this.state = this.overrideState;
+            return {
+                state: this.state,
+                voice: this.getVoiceSettings(),
+                changed,
+                score: this.moodScore
+            };
+        }
+
+        if (this.overrideState && this.overrideUntil && now >= this.overrideUntil) {
+            this.overrideState = undefined;
+            this.overrideUntil = undefined;
+        }
+
         const signals = this.analyzeSignals(comment, history);
 
         const blendedScore = signals.score + this.scoreHistory(history) * 0.2;
@@ -62,6 +81,24 @@ export class EmotionEngine {
             changed,
             score: this.moodScore
         };
+    }
+
+    public lockState(state: EmotionState, durationMs: number = 30_000): EmotionUpdate {
+        this.overrideState = state;
+        this.overrideUntil = Date.now() + durationMs;
+        const changed = this.state !== state;
+        this.state = state;
+        return {
+            state: this.state,
+            voice: this.getVoiceSettings(),
+            changed,
+            score: this.moodScore
+        };
+    }
+
+    public clearOverride(): void {
+        this.overrideState = undefined;
+        this.overrideUntil = undefined;
     }
 
     public getCurrentState(): EmotionState {
