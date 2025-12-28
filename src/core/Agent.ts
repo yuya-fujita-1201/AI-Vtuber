@@ -10,6 +10,7 @@ import { PromptManager } from './PromptManager';
 import { MemoryService, MemoryType } from '../services/MemoryService';
 import { LipSyncService } from '../services/LipSyncService';
 import { ExpressionService } from '../services/ExpressionService';
+import { StageService } from '../services/StageService';
 import { prisma } from '../lib/prisma';
 
 type AgentOptions = {
@@ -22,6 +23,7 @@ type AgentOptions = {
     visualAdapter?: IVisualOutputAdapter;
     lipSyncService?: LipSyncService;
     expressionService?: ExpressionService;
+    stageService?: StageService;
 };
 
 export class Agent {
@@ -37,6 +39,7 @@ export class Agent {
     private visualAdapter?: IVisualOutputAdapter;
     private lipSyncService?: LipSyncService;
     private expressionService?: ExpressionService;
+    private stageService?: StageService;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
     private currentStreamId?: string;
@@ -70,7 +73,8 @@ export class Agent {
             eventEmitter,
             visualAdapter,
             lipSyncService,
-            expressionService
+            expressionService,
+            stageService
         } = options;
 
         this.adapter = adapter;
@@ -87,6 +91,7 @@ export class Agent {
         this.visualAdapter = visualAdapter;
         this.lipSyncService = lipSyncService;
         this.expressionService = expressionService;
+        this.stageService = stageService;
         this.isDryRun = parseBoolean(process.env.DRY_RUN);
         this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
@@ -140,6 +145,11 @@ export class Agent {
                     data: { endedAt: new Date() },
                 });
                 console.log(`[Agent] Stream session ended: ${this.currentStreamId}`);
+
+                // Switch to ending scene
+                if (this.stageService) {
+                    await this.stageService.transitionToEnding();
+                }
 
                 await this.memoryService.disconnect();
                 console.log('[Agent] Memory service disconnected');

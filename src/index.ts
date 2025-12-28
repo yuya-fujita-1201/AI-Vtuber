@@ -181,12 +181,38 @@ const main = async () => {
     }
   }
 
+  // OBS Integration
+  const useOBS = toBoolean(process.env.OBS_ENABLED);
+  let stageService;
+
+  if (useOBS) {
+    const { OBSAdapter } = await import('./adapters/OBSAdapter');
+    const { StageService } = await import('./services/StageService');
+
+    const obsAdapter = new OBSAdapter();
+    stageService = new StageService(obsAdapter, {
+      obsPassword: process.env.OBS_WS_PASSWORD,
+      mainScene: process.env.OBS_SCENE_MAIN || 'Main',
+      endingScene: process.env.OBS_SCENE_ENDING || 'Ending'
+    });
+
+    try {
+      await stageService.initialize();
+      console.log('[System] OBS StageService initialized');
+    } catch (error) {
+      console.error('[System] OBS connection failed', error);
+      console.warn('[System] Continuing without OBS integration');
+      stageService = undefined;
+    }
+  }
+
   agent = new Agent(adapter, {
     eventEmitter: webServer,
     ttsService,
     visualAdapter: vtsAdapter,
     lipSyncService,
-    expressionService
+    expressionService,
+    stageService
   });
   await agent.start();
 };
