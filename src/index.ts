@@ -5,6 +5,9 @@ import { VoicevoxService } from './services/VoicevoxService';
 import { MockTTSService } from './services/MockTTSService';
 import { IChatAdapter } from './interfaces';
 import { Agent } from './core/Agent';
+import { EmotionState } from './core/EmotionEngine';
+import { OBSAdapter } from './adapters/OBSAdapter';
+import { StageService } from './services/StageService';
 import { WebServer } from './server/WebServer';
 
 type AdapterSetup = {
@@ -37,6 +40,32 @@ const toBoolean = (value: string | undefined): boolean => {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === 'true' || normalized === '1' || normalized === 'yes';
+};
+
+const parseSectionSceneMap = (value: string | undefined): Record<string, string> | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.warn('[System] OBS_SECTION_SCENE_MAP must be a JSON object');
+      return undefined;
+    }
+
+    const map: Record<string, string> = {};
+    for (const [key, scene] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof scene === 'string' && scene.trim()) {
+        map[key] = scene.trim();
+      }
+    }
+
+    return Object.keys(map).length > 0 ? map : undefined;
+  } catch (error) {
+    console.warn('[System] Failed to parse OBS_SECTION_SCENE_MAP:', error);
+    return undefined;
+  }
 };
 
 const adapterType = resolveAdapterType();
@@ -82,6 +111,7 @@ const main = async () => {
   let running = true;
   let shutdownStarted = false;
   let webServer: WebServer | null = null;
+  let obsAdapter: OBSAdapter | null = null;
 
   const shutdown = async () => {
     if (shutdownStarted) {
@@ -100,6 +130,14 @@ const main = async () => {
         await webServer.stop();
       } catch (error) {
         console.error('[System] Web server shutdown error', error);
+      }
+    }
+
+    if (obsAdapter) {
+      try {
+        await obsAdapter.disconnect();
+      } catch (error) {
+        console.error('[System] OBS disconnect error', error);
       }
     }
 
@@ -144,7 +182,6 @@ const main = async () => {
     const { VTubeStudioAdapter } = await import('./adapters/VTubeStudioAdapter');
     const { LipSyncService } = await import('./services/LipSyncService');
     const { ExpressionService } = await import('./services/ExpressionService');
-    const { EmotionState } = await import('./core/EmotionEngine');
 
     vtsAdapter = new VTubeStudioAdapter();
 
@@ -181,27 +218,95 @@ const main = async () => {
     }
   }
 
-  // OBS Integration
   const useOBS = toBoolean(process.env.OBS_ENABLED);
-  let stageService;
+  let stageService: StageService | undefined;
 
   if (useOBS) {
-    const { OBSAdapter } = await import('./adapters/OBSAdapter');
-    const { StageService } = await import('./services/StageService');
-
-    const obsAdapter = new OBSAdapter();
-    stageService = new StageService(obsAdapter, {
-      obsPassword: process.env.OBS_WS_PASSWORD,
-      mainScene: process.env.OBS_SCENE_MAIN || 'Main',
-      endingScene: process.env.OBS_SCENE_ENDING || 'Ending'
-    });
+    obsAdapter = new OBSAdapter();
 
     try {
-      await stageService.initialize();
-      console.log('[System] OBS StageService initialized');
+      await obsAdapter.connect({
+        host: process.env.OBS_HOST || '127.0.0.1',
+        port: toNumber(process.env.OBS_PORT, 4455),
+        password: process.env.OBS_WS_PASSWORD
+      });
+
+      const sectionSceneMap = parseSectionSceneMap(process.env.OBS_SECTION_SCENE_MAP);
+
+      const emotionSceneMap: Partial<Record<EmotionState, string>> = {};
+      if (process.env.OBS_SCENE_NEUTRAL) {
+        emotionSceneMap[EmotionState.NEUTRAL] = process.env.OBS_SCENE_NEUTRAL;
+      }
+      if (process.env.OBS_SCENE_HAPPY) {
+        emotionSceneMap[EmotionState.HAPPY] = process.env.OBS_SCENE_HAPPY;
+      }
+      if (process.env.OBS_SCENE_SAD) {
+        emotionSceneMap[EmotionState.SAD] = process.env.OBS_SCENE_SAD;
+      }
+      if (process.env.OBS_SCENE_ANGRY) {
+        emotionSceneMap[EmotionState.ANGRY] = process.env.OBS_SCENE_ANGRY;
+      }
+      if (process.env.OBS_SCENE_EXCITED) {
+        emotionSceneMap[EmotionState.EXCITED] = process.env.OBS_SCENE_EXCITED;
+      }
+
+      const filterSource = process.env.OBS_FILTER_SOURCE?.trim();
+      const emotionFilterMap: Partial<Record<EmotionState, { sourceName: string; filterName: string }>> = {};
+      if (filterSource) {
+        if (process.env.OBS_FILTER_NEUTRAL) {
+          emotionFilterMap[EmotionState.NEUTRAL] = {
+            sourceName: filterSource,
+            filterName: process.env.OBS_FILTER_NEUTRAL
+          };
+        }
+        if (process.env.OBS_FILTER_HAPPY) {
+          emotionFilterMap[EmotionState.HAPPY] = {
+            sourceName: filterSource,
+            filterName: process.env.OBS_FILTER_HAPPY
+          };
+        }
+        if (process.env.OBS_FILTER_SAD) {
+          emotionFilterMap[EmotionState.SAD] = {
+            sourceName: filterSource,
+            filterName: process.env.OBS_FILTER_SAD
+          };
+        }
+        if (process.env.OBS_FILTER_ANGRY) {
+          emotionFilterMap[EmotionState.ANGRY] = {
+            sourceName: filterSource,
+            filterName: process.env.OBS_FILTER_ANGRY
+          };
+        }
+        if (process.env.OBS_FILTER_EXCITED) {
+          emotionFilterMap[EmotionState.EXCITED] = {
+            sourceName: filterSource,
+            filterName: process.env.OBS_FILTER_EXCITED
+          };
+        }
+      } else if (
+        process.env.OBS_FILTER_NEUTRAL ||
+        process.env.OBS_FILTER_HAPPY ||
+        process.env.OBS_FILTER_SAD ||
+        process.env.OBS_FILTER_ANGRY ||
+        process.env.OBS_FILTER_EXCITED
+      ) {
+        console.warn('[System] OBS_FILTER_SOURCE is missing; emotion filters are ignored');
+      }
+
+      stageService = new StageService(obsAdapter, {
+        sceneMain: process.env.OBS_SCENE_MAIN,
+        sceneWaiting: process.env.OBS_SCENE_WAITING,
+        sceneEnding: process.env.OBS_SCENE_ENDING,
+        sectionSceneMap,
+        emotionSceneMap: Object.keys(emotionSceneMap).length > 0 ? emotionSceneMap : undefined,
+        emotionFilterMap: Object.keys(emotionFilterMap).length > 0 ? emotionFilterMap : undefined
+      });
+
+      console.log('[System] OBS stage service initialized');
     } catch (error) {
-      console.error('[System] OBS connection failed', error);
+      console.error('[System] OBS connection failed:', error);
       console.warn('[System] Continuing without OBS integration');
+      obsAdapter = null;
       stageService = undefined;
     }
   }
@@ -212,7 +317,7 @@ const main = async () => {
     visualAdapter: vtsAdapter,
     lipSyncService,
     expressionService,
-    stageService
+    stageService: stageService ?? undefined
   });
   await agent.start();
 };

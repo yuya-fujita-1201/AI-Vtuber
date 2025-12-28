@@ -101,6 +101,14 @@ export class Agent {
         this.isRunning = true;
         console.log('[Agent] Started.');
 
+        if (this.stageService) {
+            try {
+                await this.stageService.onStreamStart();
+            } catch (error) {
+                this.logError('stage.start', '[Agent] Stage start failed', error);
+            }
+        }
+
         // Initialize memory service and create stream session
         if (this.memoryService) {
             try {
@@ -134,6 +142,14 @@ export class Agent {
     public async stop() {
         this.isRunning = false;
         console.log('[Agent] Stopping...');
+
+        if (this.stageService) {
+            try {
+                await this.stageService.onStreamStop();
+            } catch (error) {
+                this.logError('stage.stop', '[Agent] Stage stop failed', error);
+            }
+        }
 
         // Memory consolidation: Generate stream summary before ending
         if (this.memoryService && this.currentStreamId) {
@@ -182,6 +198,14 @@ export class Agent {
                 continue;
             }
 
+            if (this.stageService) {
+                const handled = await this.stageService.handleCommand(msg.content);
+                if (handled) {
+                    await this.storeMessage(msg, CommentType.IGNORE);
+                    continue;
+                }
+            }
+
             const history = this.recentComments.map(item => item.content);
             const previousEmotion = this.currentEmotion;
             const emotionUpdate = this.emotionEngine.update(msg.content, history);
@@ -201,6 +225,12 @@ export class Agent {
                 if (this.expressionService) {
                     this.expressionService.onEmotionChanged(emotionUpdate.state).catch(err =>
                         console.warn('[Agent] Expression change failed', err)
+                    );
+                }
+
+                if (this.stageService) {
+                    this.stageService.onEmotionChanged(emotionUpdate.state).catch(err =>
+                        console.warn('[Agent] Stage emotion change failed', err)
                     );
                 }
             }
@@ -457,6 +487,11 @@ export class Agent {
             const text = await this.llm.generateText(prompt);
             if (text.trim()) {
                 this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
+                if (this.stageService) {
+                    this.stageService.onSectionChanged(currentSection).catch(err =>
+                        console.warn('[Agent] Stage section change failed', err)
+                    );
+                }
                 this.spine.getNextSection();
             }
             this.lastMonologueAt = Date.now();
