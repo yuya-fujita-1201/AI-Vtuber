@@ -164,7 +164,7 @@ export class Agent {
 
                 // Switch to ending scene
                 if (this.stageService) {
-                    await this.stageService.transitionToEnding();
+                    await this.stageService.onStreamStop();
                 }
 
                 await this.memoryService.disconnect();
