@@ -1,5 +1,6 @@
 // Prisma Schema for AI VTuber Memory System
 // Database: SQLite (for simplicity and portability)
+// Can be switched to PostgreSQL for production
 // Purpose: Store structured memory data for long-term retention
 
 generator client {
@@ -31,6 +32,7 @@ model Stream {
   messages    Message[]
   topics      Topic[]
   memories    Memory[]
+  sessionMemories SessionMemory[]
 
   // Indexes for performance
   @@index([startedAt])
@@ -87,6 +89,8 @@ model Viewer {
   // Relationships
   messages    Message[]
   memories    Memory[]  // Facts about this viewer
+  longTermMemories LongTermMemory[]
+  profile     ViewerProfile?
 
   // Indexes
   @@index([externalId, platform])
@@ -155,7 +159,133 @@ model Memory {
 }
 
 // ========================================
-// ANALYTICS & AGGREGATIONS (Optional)
+// PHASE 3: ENHANCED MEMORY SYSTEM
+// ========================================
+
+/// AIキャラクターの性格・設定を管理
+model CharacterTrait {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 性格パラメータ
+  traitKey    String   @unique // e.g., "base_personality", "speech_style", "favorite_topics"
+  traitValue  String   // JSON形式で柔軟に格納
+  description String?  // 人間が読むための説明
+
+  // 優先度（複数の設定がある場合の適用順序）
+  priority    Int      @default(0)
+  isActive    Boolean  @default(true)
+
+  @@index([traitKey])
+  @@index([isActive, priority])
+}
+
+/// 長期記憶（配信を横断して保持）
+model LongTermMemory {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 記憶の内容
+  content     String   // 要約されたテキスト
+  category    String   // VIEWER_FACT, TOPIC_KNOWLEDGE, LEARNED_PREFERENCE, etc.
+
+  // 関連エンティティ
+  viewerId    String?
+  viewer      Viewer?  @relation(fields: [viewerId], references: [id], onDelete: SetNull)
+
+  // メタデータ
+  importance  Int      @default(5)  // 1-10
+  accessCount Int      @default(0)  // 参照された回数（忘却曲線に利用）
+  lastAccessedAt DateTime?
+  
+  // ベクトルDB同期
+  vectorId    String?  @unique
+
+  // ソース追跡
+  sourceStreamIds String? // カンマ区切りのStream ID（どの配信から生成されたか）
+
+  @@index([category])
+  @@index([viewerId])
+  @@index([importance])
+  @@index([lastAccessedAt])
+}
+
+/// 中期記憶（配信セッション内の重要イベント）
+model SessionMemory {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+
+  // 記憶の内容
+  content     String
+  memoryType  String   // IMPORTANT_COMMENT, PROMISE, TOPIC_HIGHLIGHT, etc.
+
+  // 関連
+  streamId    String
+  stream      Stream   @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  // メタデータ
+  importance  Int      @default(5)
+  isConsolidated Boolean @default(false) // 長期記憶に統合済みか
+
+  @@index([streamId])
+  @@index([memoryType])
+  @@index([isConsolidated])
+}
+
+/// 話題の履歴と深掘り度合い
+model TopicHistory {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 話題情報
+  topicName   String   @unique // 正規化された話題名 (e.g., "Minecraft", "料理")
+  aliases     String?  // 別名・関連ワード (JSON配列)
+
+  // 統計
+  totalMentions   Int   @default(0)  // 言及された総回数
+  totalDepth      Int   @default(0)  // 累積深掘り度
+  avgSentiment    Float @default(0)  // 平均的な感情スコア (-1 to 1)
+  lastDiscussedAt DateTime?
+
+  // 関連視聴者（この話題をよく振る人）
+  frequentViewerIds String? // カンマ区切りのViewer ID
+
+  @@index([totalMentions])
+  @@index([lastDiscussedAt])
+}
+
+/// 視聴者の詳細プロファイル
+model ViewerProfile {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 関連
+  viewerId    String   @unique
+  viewer      Viewer   @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  // パーソナリティ推定
+  estimatedPersonality String? // JSON: {"friendly": 0.8, "talkative": 0.6}
+  communicationStyle   String? // "質問多め", "リアクション中心", "雑談好き"
+
+  // 嗜好
+  favoriteTopics    String? // JSON配列
+  dislikedTopics    String? // JSON配列
+  mentionedFacts    String? // JSON: {"pet": "猫", "job": "エンジニア"}
+
+  // エンゲージメント
+  engagementScore   Float   @default(0) // 総合的なエンゲージメントスコア
+  lastPositiveAt    DateTime?
+  lastNegativeAt    DateTime?
+
+  @@index([engagementScore])
+}
+
+// ========================================
+// ANALYTICS & AGGREGATIONS
 // ========================================
 
 /// Daily statistics for tracking engagement
