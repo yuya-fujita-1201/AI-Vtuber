@@ -27,7 +27,8 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
 
     this.youtube = google.youtube({ version: 'v3', auth: options.apiKey });
     this.pollingIntervalMs = options.pollingInterval ?? appConfig.adapters.youtube.pollingIntervalMs;
-    this.liveChatId = options.liveChatId ?? (await this.resolveLiveChatId(options));
+    // Treat empty string as undefined/false so resolution runs
+    this.liveChatId = options.liveChatId || (await this.resolveLiveChatId(options));
 
     if (!this.liveChatId) {
       throw new Error('liveChatId could not be resolved. Set YOUTUBE_LIVE_CHAT_ID or YOUTUBE_VIDEO_ID.');

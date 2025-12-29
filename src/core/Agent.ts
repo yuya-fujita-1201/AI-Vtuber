@@ -740,10 +740,17 @@ export class Agent {
             });
 
             // Store important messages as memories
-            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
-                const importance = type === CommentType.CHANGE_REQ
-                    ? config.agent.memory.changeReqImportance
-                    : config.agent.memory.onTopicImportance;
+            // Store important messages as memories
+            // Modified to include OFF_TOPIC for "Accumulate Everything" strategy
+            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ || type === CommentType.OFF_TOPIC) {
+                let importance = config.memory.defaultImportance;
+
+                if (type === CommentType.CHANGE_REQ) {
+                    importance = config.agent.memory.changeReqImportance;
+                } else if (type === CommentType.ON_TOPIC) {
+                    importance = config.agent.memory.onTopicImportance;
+                }
+
                 await this.memoryService.addMemory({
                     content: `${msg.authorName}さんのコメント: "${msg.content}"`,
                     type: MemoryType.CONVERSATION_SUMMARY,
