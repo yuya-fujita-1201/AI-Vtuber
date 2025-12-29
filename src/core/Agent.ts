@@ -4,6 +4,7 @@ import { CommentRouter } from './CommentRouter';
 import { EmotionEngine, EmotionState } from './EmotionEngine';
 import { IntentClassifier, IntentType } from './IntentClassifier';
 import { OpenAIService } from '../services/OpenAIService';
+import { GroqService } from '../services/GroqService';
 import { VoicevoxService } from '../services/VoicevoxService';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
@@ -71,8 +72,29 @@ export class Agent {
     private suppressedErrors: Record<string, number> = {};
 
     constructor(adapter: IChatAdapter, options: AgentOptions = {}) {
+        const provider = config.llm.provider;
+        let defaultLLM: ILLMService;
+
+        if (provider === 'groq') {
+            defaultLLM = new GroqService();
+        } else if (provider === 'grok') {
+            // Use OpenAIService but with xAI configuration
+            defaultLLM = new OpenAIService({
+                apiKey: config.xai.apiKey,
+                baseUrl: config.xai.baseUrl,
+                defaultModel: config.xai.defaultModel
+            });
+        } else {
+            // Default to OpenAI configuration
+            defaultLLM = new OpenAIService({
+                apiKey: config.openai.apiKey,
+                baseUrl: config.openai.baseUrl,
+                defaultModel: config.openai.defaultModel
+            });
+        }
+
         const {
-            llmService = new OpenAIService(),
+            llmService = defaultLLM,
             promptManager = new PromptManager(),
             ttsService = new VoicevoxService(),
             audioPlayer = new AudioPlayer(),
@@ -719,7 +741,9 @@ export class Agent {
 
             // Store important messages as memories
             if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
-                const importance = type === CommentType.CHANGE_REQ\n+                    ? config.agent.memory.changeReqImportance\n+                    : config.agent.memory.onTopicImportance;
+                const importance = type === CommentType.CHANGE_REQ
+                    ? config.agent.memory.changeReqImportance
+                    : config.agent.memory.onTopicImportance;
                 await this.memoryService.addMemory({
                     content: `${msg.authorName}さんのコメント: "${msg.content}"`,
                     type: MemoryType.CONVERSATION_SUMMARY,
@@ -802,7 +826,8 @@ ${messagesSummary}
 3. 視聴者からの重要な質問やリクエスト
 4. 次回に活かせるポイント`,
                 userPrompt: '上記の配信内容を2-3文で要約してください。',
-                temperature: config.agent.memory.consolidationTemperature,\n+                maxTokens: config.agent.memory.consolidationMaxTokens,
+                temperature: config.agent.memory.consolidationTemperature,
+                maxTokens: config.agent.memory.consolidationMaxTokens,
             };
 
             const summary = await this.llm.generateText(consolidationPrompt);

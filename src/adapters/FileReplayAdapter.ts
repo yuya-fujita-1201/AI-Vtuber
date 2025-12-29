@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import path from 'path';
 import { ChatMessage, IChatAdapter } from '../interfaces';
 import { config as appConfig } from '../config/AppConfig';
 
@@ -20,7 +21,12 @@ export class FileReplayAdapter implements IChatAdapter<FileReplayAdapterConfig> 
     }
 
     this.pollingInterval = config.pollingInterval ?? appConfig.adapters.fileReplay.pollingIntervalMs;
-    const raw = await fs.readFile(config.filePath, 'utf-8');
+    const filePath = path.isAbsolute(config.filePath)
+      ? config.filePath
+      : path.resolve(process.cwd(), config.filePath);
+
+    // logger.debug(`[FileReplayAdapter] Reading from: ${filePath}`);
+    const raw = await fs.readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
 
     if (!Array.isArray(parsed)) {

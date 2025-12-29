@@ -10,11 +10,16 @@ export class OpenAIService implements ILLMService {
     private readonly dryRunText: string;
     private readonly isDryRun: boolean;
 
-    constructor() {
-        const apiKey = process.env.OPENAI_API_KEY;
+    constructor(options?: { apiKey?: string; baseUrl?: string; defaultModel?: string }) {
+        const apiKey = options?.apiKey ?? config.openai.apiKey;
+        const baseUrl = options?.baseUrl ?? config.openai.baseUrl;
+
         this.isDryRun = config.env.dryRun;
-        this.client = apiKey ? new OpenAI({ apiKey }) : null;
-        this.defaultModel = config.openai.defaultModel;
+        this.client = apiKey ? new OpenAI({
+            apiKey,
+            baseURL: baseUrl
+        }) : null;
+        this.defaultModel = options?.defaultModel ?? config.openai.defaultModel;
         this.fallbackText = '（今はAI接続がないので、うまく喋れないみたい…）';
         this.dryRunText = '（DRY_RUNのため応答生成をスキップしました）';
 
@@ -23,7 +28,7 @@ export class OpenAIService implements ILLMService {
         }
 
         if (!apiKey) {
-            logger.warn('[OpenAIService] OPENAI_API_KEY is missing. Using fallback responses.');
+            logger.warn('[OpenAIService] API Key is missing. Using fallback responses.');
         }
     }
 
@@ -37,19 +42,31 @@ export class OpenAIService implements ILLMService {
         }
 
         try {
-            const response = await this.client.chat.completions.create({
-                model: req.model ?? this.defaultModel,
+            const model = req.model ?? this.defaultModel;
+            const isO1 = model.startsWith('o1-') || model.startsWith('gpt-5-');
+
+            const params: any = {
+                model: model,
                 messages: [
                     { role: 'system', content: req.systemPrompt ?? '' },
                     { role: 'user', content: req.userPrompt ?? '' }
                 ],
-                temperature: req.temperature ?? config.openai.defaultTemperature,
                 max_completion_tokens: req.maxTokens ?? config.openai.defaultMaxTokens,
-                top_p: req.topP,
-                presence_penalty: req.presencePenalty,
-                frequency_penalty: req.frequencyPenalty
-            });
-            // logger.debug('[OpenAIService] Response:', JSON.stringify(response, null, 2)); // Debug log
+            };
+
+            // o1 models have strict parameter constraints
+            if (isO1) {
+                params.temperature = 1;
+                // o1 does not support top_p, presence_penalty, frequency_penalty (or must be default)
+            } else {
+                params.temperature = req.temperature ?? config.openai.defaultTemperature;
+                params.top_p = req.topP;
+                params.presence_penalty = req.presencePenalty;
+                params.frequency_penalty = req.frequencyPenalty;
+            }
+
+            const response = await this.client.chat.completions.create(params);
+
 
             const text = response.choices?.[0]?.message?.content?.trim();
             if (!text) {

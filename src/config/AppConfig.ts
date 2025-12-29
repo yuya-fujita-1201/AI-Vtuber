@@ -207,7 +207,25 @@ export type AppConfig = {
     streamMemoriesLimit: number;
     viewerMemoriesLimit: number;
   };
+  llm: {
+    provider: 'openai' | 'groq' | 'grok';
+  };
   openai: {
+    apiKey: string;
+    baseUrl?: string;
+    defaultModel: string;
+    defaultTemperature: number;
+    defaultMaxTokens: number;
+  };
+  xai: {
+    apiKey: string;
+    baseUrl: string;
+    defaultModel: string;
+    defaultTemperature: number;
+    defaultMaxTokens: number;
+  };
+  groq: {
+    apiKey: string;
     defaultModel: string;
     defaultTemperature: number;
     defaultMaxTokens: number;
@@ -319,11 +337,11 @@ export const config: AppConfig = {
     },
     lockStateDefaultMs: parseNumber(process.env.EMOTION_LOCK_DEFAULT_MS, 30_000),
     voiceMap: {
-      NEUTRAL: { pitch: 0, speed: 1.0, intonation: 1.0 },
-      HAPPY: { pitch: 0.05, speed: 1.1, intonation: 1.2 },
-      SAD: { pitch: -0.05, speed: 0.9, intonation: 0.8 },
-      ANGRY: { pitch: 0.02, speed: 1.15, intonation: 1.3 },
-      EXCITED: { pitch: 0.08, speed: 1.2, intonation: 1.4 }
+      NEUTRAL: { pitch: 0, speed: 1.2, intonation: 1.1 },
+      HAPPY: { pitch: 0.05, speed: 1.3, intonation: 1.3 },
+      SAD: { pitch: -0.05, speed: 1.0, intonation: 0.9 },
+      ANGRY: { pitch: 0.02, speed: 1.4, intonation: 1.4 },
+      EXCITED: { pitch: 0.08, speed: 1.45, intonation: 1.5 }
     }
   },
   expression: {
@@ -463,10 +481,28 @@ export const config: AppConfig = {
     streamMemoriesLimit: parseNumber(process.env.MEMORY_STREAM_LIMIT, 10),
     viewerMemoriesLimit: parseNumber(process.env.MEMORY_VIEWER_LIMIT, 10)
   },
+  llm: {
+    provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok')
+  },
   openai: {
+    apiKey: parseString(process.env.OPENAI_API_KEY, ''),
+    baseUrl: parseString(process.env.OPENAI_BASE_URL, ''),
     defaultModel: parseString(process.env.OPENAI_MODEL, 'gpt-4o-mini'),
     defaultTemperature: parseNumber(process.env.OPENAI_TEMPERATURE, 1),
     defaultMaxTokens: parseNumber(process.env.OPENAI_MAX_TOKENS, 1024)
+  },
+  xai: {
+    apiKey: parseString(process.env.GROK_API_KEY, ''),
+    baseUrl: parseString(process.env.GROK_BASE_URL, 'https://api.x.ai/v1'),
+    defaultModel: parseString(process.env.GROK_MODEL, 'grok-beta'),
+    defaultTemperature: parseNumber(process.env.GROK_TEMPERATURE, 0.7),
+    defaultMaxTokens: parseNumber(process.env.GROK_MAX_TOKENS, 1024)
+  },
+  groq: {
+    apiKey: parseString(process.env.GROQ_API_KEY, ''),
+    defaultModel: parseString(process.env.GROQ_MODEL, 'llama3-70b-8192'),
+    defaultTemperature: parseNumber(process.env.GROQ_TEMPERATURE, 0.7),
+    defaultMaxTokens: parseNumber(process.env.GROQ_MAX_TOKENS, 1024)
   }
 };
 
