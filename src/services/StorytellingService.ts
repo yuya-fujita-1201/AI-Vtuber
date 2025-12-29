@@ -2,6 +2,8 @@ import { ChatMessage, CommentType, ConversationVibe, NarrativeContext, Narrative
 import { EmotionState } from '../core/EmotionEngine';
 import { ILLMService } from '../interfaces';
 import { PromptManager, NarrativePromptInput } from '../core/PromptManager';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export type StoryCommandResult = {
   handled: boolean;
@@ -53,10 +55,6 @@ export type StorytellingServiceOptions = {
   emotionCooldownMs?: number;
 };
 
-const DEFAULT_THEME = '雑談';
-const GOLDEN_SCORE_THRESHOLD = 4;
-const GOLDEN_FORCE_THRESHOLD = 6;
-const MAX_DEPTH = 10;
 
 const STOP_WORDS = new Set([
   'the', 'and', 'you', 'your', 'this', 'that', 'with', 'from', 'have', 'has', 'are', 'was',
@@ -79,18 +77,18 @@ export class StorytellingService {
   constructor(options: StorytellingServiceOptions = {}) {
     this.llm = options.llmService ?? {
       async generateText() {
-        console.warn('[StorytellingService] No LLM service provided. Twist/summary generation skipped.');
+        logger.warn('[StorytellingService] No LLM service provided. Twist/summary generation skipped.');
         return '';
       }
     };
     this.promptManager = options.promptManager ?? new PromptManager();
-    this.themeLockMs = options.themeLockMs ?? 120_000;
-    this.twistCooldownMs = options.twistCooldownMs ?? 120_000;
-    this.summaryCooldownMs = options.summaryCooldownMs ?? 180_000;
-    this.emotionCooldownMs = options.emotionCooldownMs ?? 45_000;
+    this.themeLockMs = options.themeLockMs ?? config.storytelling.theme.lockMs;
+    this.twistCooldownMs = options.twistCooldownMs ?? config.storytelling.cooldowns.twistMs;
+    this.summaryCooldownMs = options.summaryCooldownMs ?? config.storytelling.cooldowns.summaryMs;
+    this.emotionCooldownMs = options.emotionCooldownMs ?? config.storytelling.cooldowns.emotionMs;
 
     this.state = {
-      theme: DEFAULT_THEME,
+      theme: config.storytelling.theme.default,
       themeSource: 'auto',
       themeLockedUntil: 0,
       arcPhase: 'Casual Opening',
@@ -136,7 +134,7 @@ export class StorytellingService {
     }
 
     const requestedTheme = parts.join(' ').trim();
-    const theme = requestedTheme || this.pickTrendTheme() || DEFAULT_THEME;
+    const theme = requestedTheme || this.pickTrendTheme() || config.storytelling.theme.default;
     this.setTheme(theme, 'command');
 
     return {
@@ -159,11 +157,11 @@ export class StorytellingService {
     this.state.vibe = vibe;
 
     const goldenScore = this.scoreGoldenComment(text, tokens);
-    const isGolden = goldenScore >= GOLDEN_SCORE_THRESHOLD;
+    const isGolden = goldenScore >= config.storytelling.golden.scoreThreshold;
 
     let themeChanged = false;
     if (isGolden) {
-      const allowOverride = now >= this.state.themeLockedUntil || goldenScore >= GOLDEN_FORCE_THRESHOLD;
+      const allowOverride = now >= this.state.themeLockedUntil || goldenScore >= config.storytelling.golden.forceThreshold;
       if (allowOverride) {
         const candidateTheme = this.pickThemeFromTokens(tokens);
         if (candidateTheme && candidateTheme !== this.state.theme) {
@@ -175,7 +173,7 @@ export class StorytellingService {
       this.state.lastGoldenComment = { authorName: comment.authorName, content: comment.content };
     }
 
-    if (!this.state.theme || this.state.theme === DEFAULT_THEME) {
+    if (!this.state.theme || this.state.theme === config.storytelling.theme.default) {
       const trendTheme = this.pickTrendTheme();
       if (trendTheme && trendTheme !== this.state.theme) {
         this.setTheme(trendTheme, 'auto');
@@ -187,11 +185,14 @@ export class StorytellingService {
     const explicitType = options.type;
     const countsAsOnTopic = onTheme || explicitType === CommentType.ON_TOPIC || isGolden;
     if (countsAsOnTopic) {
-      this.state.topicDepth = Math.min(MAX_DEPTH, this.state.topicDepth + (isGolden ? 2 : 1));
+      const depthBoost = isGolden
+        ? config.storytelling.depth.goldenDepthBoost
+        : config.storytelling.depth.normalDepthBoost;
+      this.state.topicDepth = Math.min(config.storytelling.depth.max, this.state.topicDepth + depthBoost);
       this.state.onTopicStreak += 1;
       this.state.offTopicStreak = 0;
     } else {
-      this.state.topicDepth = Math.max(0, this.state.topicDepth - 1);
+      this.state.topicDepth = Math.max(0, this.state.topicDepth - config.storytelling.depth.offTopicDepthPenalty);
       this.state.offTopicStreak += 1;
       this.state.onTopicStreak = 0;
     }
@@ -205,7 +206,7 @@ export class StorytellingService {
       twist = await this.generateTwist(options.recentComments ?? []);
       if (twist) {
         this.state.activeTwist = twist;
-        this.state.activeTwistUntil = now + 120_000;
+        this.state.activeTwistUntil = now + config.storytelling.twistActiveMs;
         this.state.lastTwistAt = now;
       }
     }
@@ -216,7 +217,7 @@ export class StorytellingService {
       if (summary) {
         this.state.lastSummaryAt = now;
         this.state.arcPhase = 'Cozy Closing';
-        this.state.topicDepth = Math.max(0, this.state.topicDepth - 2);
+        this.state.topicDepth = Math.max(0, this.state.topicDepth - config.storytelling.depth.summaryPenalty);
       }
     }
 
@@ -252,7 +253,7 @@ export class StorytellingService {
     }
 
     return {
-      theme: this.state.theme || DEFAULT_THEME,
+      theme: this.state.theme || config.storytelling.theme.default,
       arcPhase: this.state.arcPhase,
       vibe: this.state.vibe,
       topicDepth: this.state.topicDepth,
@@ -267,13 +268,13 @@ export class StorytellingService {
     const heatedSignals = this.countMatches(normalized, ['炎上', '議論', '反対', '嫌い', '最悪', 'やめて', 'no way', 'wtf']);
     const cozySignals = this.countMatches(normalized, ['まったり', 'ゆる', '癒し', 'ほのぼの', 'まじめ', 'ありがとう', '助かる']);
 
-    if (heatedSignals >= 2) {
+    if (heatedSignals >= config.storytelling.vibe.signalThreshold) {
       return 'HEATED';
     }
-    if (excitementSignals >= 2) {
+    if (excitementSignals >= config.storytelling.vibe.signalThreshold) {
       return 'EXCITED';
     }
-    if (cozySignals >= 2) {
+    if (cozySignals >= config.storytelling.vibe.signalThreshold) {
       return 'COZY';
     }
     return 'CALM';
@@ -315,33 +316,36 @@ export class StorytellingService {
 
   private chooseEmotionLockDuration(vibe: ConversationVibe, text: string): number {
     if (vibe === 'EXCITED' && (text.includes('ゲーム') || text.toLowerCase().includes('game'))) {
-      return 60_000;
+      return config.storytelling.emotionLockDurations.excitedGameMs;
     }
     if (vibe === 'HEATED') {
-      return 45_000;
+      return config.storytelling.emotionLockDurations.heatedMs;
     }
     if (vibe === 'COZY') {
-      return 40_000;
+      return config.storytelling.emotionLockDurations.cozyMs;
     }
-    return 30_000;
+    return config.storytelling.emotionLockDurations.defaultMs;
   }
 
   private scoreGoldenComment(text: string, tokens: string[]): number {
     let score = 0;
     const length = text.trim().length;
-    if (length >= 40) score += 2;
-    else if (length >= 20) score += 1;
+    if (length >= config.storytelling.golden.length.long) {
+      score += config.storytelling.golden.lengthScore.long;
+    } else if (length >= config.storytelling.golden.length.medium) {
+      score += config.storytelling.golden.lengthScore.medium;
+    }
 
-    if (/[?？]/.test(text)) score += 2;
-    if (/[!！]/.test(text)) score += 1;
+    if (/[?？]/.test(text)) score += config.storytelling.golden.questionScore;
+    if (/[!！]/.test(text)) score += config.storytelling.golden.exclaimScore;
 
     const normalized = text.toLowerCase();
     if (this.containsAny(normalized, ['why', 'how', 'what', 'opinion', 'debate', 'controversial', '賛否', '議論', 'どう思う', 'どうして', 'なぜ'])) {
-      score += 2;
+      score += config.storytelling.golden.questionScore;
     }
 
     if (tokens.some(token => !this.isThemeToken(token))) {
-      score += 1;
+      score += config.storytelling.golden.keywordScore;
     }
 
     return score;
@@ -362,13 +366,13 @@ export class StorytellingService {
   }
 
   private deriveArcPhase(): NarrativePhase {
-    if (this.state.offTopicStreak >= 2 && this.state.topicDepth >= 5) {
+    if (this.state.offTopicStreak >= config.storytelling.depth.closeOffTopicStreak && this.state.topicDepth >= config.storytelling.depth.closeDepth) {
       return 'Cozy Closing';
     }
-    if (this.state.vibe === 'HEATED' && this.state.topicDepth >= 5) {
+    if (this.state.vibe === 'HEATED' && this.state.topicDepth >= config.storytelling.depth.heatedMin) {
       return 'Heated Debate';
     }
-    if (this.state.topicDepth >= 3) {
+    if (this.state.topicDepth >= config.storytelling.depth.deepDiveMin) {
       return 'Deep Dive';
     }
     return 'Casual Opening';
@@ -379,7 +383,7 @@ export class StorytellingService {
       return false;
     }
     if (this.state.arcPhase === 'Deep Dive' || this.state.arcPhase === 'Heated Debate') {
-      return this.state.topicDepth >= 4 && this.state.offTopicStreak === 0;
+      return this.state.topicDepth >= config.storytelling.depth.twistDepth && this.state.offTopicStreak === 0;
     }
     return false;
   }
@@ -389,7 +393,8 @@ export class StorytellingService {
       return false;
     }
     if (this.state.arcPhase === 'Cozy Closing') {
-      return this.state.topicDepth >= 4 && this.state.offTopicStreak >= 2;
+      return this.state.topicDepth >= config.storytelling.depth.summaryDepth
+        && this.state.offTopicStreak >= config.storytelling.depth.summaryOffTopicStreak;
     }
     return false;
   }
@@ -398,7 +403,7 @@ export class StorytellingService {
     if (tokens.length === 0) return null;
     const uniqueTokens = [...new Set(tokens)].filter(token => !STOP_WORDS.has(token));
     if (uniqueTokens.length === 0) return null;
-    const selected = uniqueTokens.slice(0, 2);
+    const selected = uniqueTokens.slice(0, config.storytelling.theme.tokenPickLimit);
     return selected.join(' ');
   }
 
@@ -412,7 +417,7 @@ export class StorytellingService {
   private updateTrendScores(tokens: string[]) {
     if (tokens.length === 0) return;
     for (const [token, score] of this.trendScores.entries()) {
-      this.trendScores.set(token, score * 0.98);
+      this.trendScores.set(token, score * config.storytelling.trend.decay);
     }
     for (const token of tokens) {
       const current = this.trendScores.get(token) ?? 0;
@@ -427,7 +432,9 @@ export class StorytellingService {
     if (!matches) return [];
     return matches
       .map(token => token.trim())
-      .filter(token => token.length >= 2 && token.length <= 24 && !STOP_WORDS.has(token));
+      .filter(token => token.length >= config.storytelling.extract.minTokenLength
+        && token.length <= config.storytelling.extract.maxTokenLength
+        && !STOP_WORDS.has(token));
   }
 
   private countMatches(text: string, patterns: string[]): number {
@@ -455,7 +462,7 @@ export class StorytellingService {
       const response = await this.llm.generateText(prompt);
       return response.trim() || undefined;
     } catch (error) {
-      console.warn('[StorytellingService] Twist generation failed', error);
+      logger.warn('[StorytellingService] Twist generation failed', error);
       return undefined;
     }
   }
@@ -466,7 +473,7 @@ export class StorytellingService {
       const response = await this.llm.generateText(prompt);
       return response.trim() || undefined;
     } catch (error) {
-      console.warn('[StorytellingService] Summary generation failed', error);
+      logger.warn('[StorytellingService] Summary generation failed', error);
       return undefined;
     }
   }

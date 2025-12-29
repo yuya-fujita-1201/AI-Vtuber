@@ -1,5 +1,7 @@
 import { IVisualOutputAdapter } from '../interfaces';
 import { EmotionState } from '../core/EmotionEngine';
+import { config as appConfig } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface ExpressionConfig {
   hotkeyMap: Record<EmotionState, string>;
@@ -16,7 +18,7 @@ export class ExpressionService {
   constructor(adapter: IVisualOutputAdapter, config: ExpressionConfig) {
     this.adapter = adapter;
     this.config = config;
-    this.debounceMs = config.debounceMs ?? 500;
+    this.debounceMs = config.debounceMs ?? appConfig.expression.debounceMs;
   }
 
   public async onEmotionChanged(newState: EmotionState): Promise<void> {
@@ -31,17 +33,17 @@ export class ExpressionService {
 
     const hotkeyId = this.config.hotkeyMap[newState];
     if (!hotkeyId) {
-      console.warn(`[Expression] No hotkey mapped for emotion: ${newState}`);
+      logger.warn(`[Expression] No hotkey mapped for emotion: ${newState}`);
       return;
     }
 
     try {
       await this.adapter.triggerHotkey(hotkeyId);
-      console.log(`[Expression] Triggered hotkey for emotion: ${newState}`);
+      logger.info(`[Expression] Triggered hotkey for emotion: ${newState}`);
       this.currentEmotion = newState;
       this.lastChangeAt = now;
     } catch (error) {
-      console.error(`[Expression] Failed to trigger hotkey for ${newState}:`, error);
+      logger.error(`[Expression] Failed to trigger hotkey for ${newState}:`, error);
     }
   }
 

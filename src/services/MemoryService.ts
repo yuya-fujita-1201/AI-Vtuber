@@ -14,6 +14,8 @@
 import { ChromaClient, Collection } from 'chromadb';
 import OpenAI from 'openai';
 import { prisma } from '../lib/prisma';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface AddMemoryOptions {
   content: string;
@@ -52,11 +54,11 @@ export class MemoryService {
   private isInitialized: boolean = false;
 
   // Configuration
-  private readonly collectionName = 'ai_vtuber_memories';
-  private readonly embeddingModel = 'text-embedding-3-small';
+  private readonly collectionName = config.memory.collectionName;
+  private readonly embeddingModel = config.memory.embeddingModel;
   private readonly chromaUrl: string;
 
-  constructor(chromaUrl: string = 'http://localhost:8000') {
+  constructor(chromaUrl: string = config.memory.chromaUrl) {
     this.chromaUrl = chromaUrl;
     this.chromaClient = new ChromaClient({ path: chromaUrl });
 
@@ -74,36 +76,36 @@ export class MemoryService {
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
-      console.log('[MemoryService] Already initialized');
+      logger.info('[MemoryService] Already initialized');
       return;
     }
 
     try {
-      console.log(`[MemoryService] Connecting to ChromaDB at ${this.chromaUrl}...`);
+      logger.info(`[MemoryService] Connecting to ChromaDB at ${this.chromaUrl}...`);
 
       // Test connection
       await this.chromaClient.heartbeat();
-      console.log('[MemoryService] ChromaDB connection successful');
+      logger.info('[MemoryService] ChromaDB connection successful');
 
       // Get or create collection
       try {
         this.collection = await this.chromaClient.getCollection({
           name: this.collectionName,
         });
-        console.log(`[MemoryService] Using existing collection: ${this.collectionName}`);
+        logger.info(`[MemoryService] Using existing collection: ${this.collectionName}`);
       } catch (error) {
         // Collection doesn't exist, create it
         this.collection = await this.chromaClient.createCollection({
           name: this.collectionName,
           metadata: { description: 'AI VTuber long-term memories' },
         });
-        console.log(`[MemoryService] Created new collection: ${this.collectionName}`);
+        logger.info(`[MemoryService] Created new collection: ${this.collectionName}`);
       }
 
       this.isInitialized = true;
-      console.log('[MemoryService] Initialization complete');
+      logger.info('[MemoryService] Initialization complete');
     } catch (error) {
-      console.error('[MemoryService] Initialization failed:', error);
+      logger.error('[MemoryService] Initialization failed:', error);
       throw new Error(`Failed to initialize MemoryService: ${error}`);
     }
   }
@@ -119,7 +121,7 @@ export class MemoryService {
     const {
       content,
       type,
-      importance = 5,
+      importance = config.memory.defaultImportance,
       streamId,
       topicId,
       viewerId,
@@ -129,7 +131,7 @@ export class MemoryService {
 
     try {
       // 1. Generate embedding using OpenAI
-      console.log(`[MemoryService] Generating embedding for memory...`);
+      logger.info(`[MemoryService] Generating embedding for memory...`);
       const embedding = await this.generateEmbedding(content);
 
       // 2. Create memory in Prisma (SQLite)
@@ -176,10 +178,10 @@ export class MemoryService {
         data: { vectorId },
       });
 
-      console.log(`[MemoryService] Memory added successfully: ${memory.id}`);
+      logger.info(`[MemoryService] Memory added successfully: ${memory.id}`);
       return memory.id;
     } catch (error) {
-      console.error('[MemoryService] Failed to add memory:', error);
+      logger.error('[MemoryService] Failed to add memory:', error);
       throw new Error(`Failed to add memory: ${error}`);
     }
   }
@@ -190,7 +192,7 @@ export class MemoryService {
    */
   async searchMemory(
     query: string,
-    limit: number = 5,
+    limit: number = config.memory.searchLimit,
     filter?: { type?: MemoryType; viewerId?: string; streamId?: string }
   ): Promise<SearchMemoryResult[]> {
     if (!this.isInitialized || !this.collection) {
@@ -198,7 +200,7 @@ export class MemoryService {
     }
 
     try {
-      console.log(`[MemoryService] Searching memories for: "${query}"`);
+      logger.info(`[MemoryService] Searching memories for: "${query}"`);
 
       // Generate query embedding manually for stable search
       const queryEmbedding = await this.generateEmbedding(query);
@@ -257,10 +259,10 @@ export class MemoryService {
         }
       }
 
-      console.log(`[MemoryService] Found ${memories.length} relevant memories`);
+      logger.info(`[MemoryService] Found ${memories.length} relevant memories`);
       return memories;
     } catch (error) {
-      console.error('[MemoryService] Search failed:', error);
+      logger.error('[MemoryService] Search failed:', error);
       throw new Error(`Failed to search memories: ${error}`);
     }
   }
@@ -297,9 +299,9 @@ export class MemoryService {
       // Delete from Prisma
       await prisma.memory.delete({ where: { id } });
 
-      console.log(`[MemoryService] Memory deleted: ${id}`);
+      logger.info(`[MemoryService] Memory deleted: ${id}`);
     } catch (error) {
-      console.error('[MemoryService] Failed to delete memory:', error);
+      logger.error('[MemoryService] Failed to delete memory:', error);
       throw new Error(`Failed to delete memory: ${error}`);
     }
   }
@@ -307,7 +309,7 @@ export class MemoryService {
   /**
    * Get recent memories from a specific stream
    */
-  async getStreamMemories(streamId: string, limit: number = 10) {
+  async getStreamMemories(streamId: string, limit: number = config.memory.streamMemoriesLimit) {
     return await prisma.memory.findMany({
       where: { streamId },
       orderBy: { createdAt: 'desc' },
@@ -322,7 +324,7 @@ export class MemoryService {
   /**
    * Get memories about a specific viewer
    */
-  async getViewerMemories(viewerId: string, limit: number = 10) {
+  async getViewerMemories(viewerId: string, limit: number = config.memory.viewerMemoriesLimit) {
     return await prisma.memory.findMany({
       where: { viewerId },
       orderBy: { importance: 'desc' },
@@ -342,7 +344,7 @@ export class MemoryService {
 
       return response.data[0].embedding;
     } catch (error) {
-      console.error('[MemoryService] Embedding generation failed:', error);
+      logger.error('[MemoryService] Embedding generation failed:', error);
       throw new Error(`Failed to generate embedding: ${error}`);
     }
   }
@@ -369,7 +371,7 @@ export class MemoryService {
    * Cleanup and disconnect
    */
   async disconnect(): Promise<void> {
-    console.log('[MemoryService] Disconnecting...');
+    logger.info('[MemoryService] Disconnecting...');
     await prisma.$disconnect();
     this.isInitialized = false;
     this.collection = null;

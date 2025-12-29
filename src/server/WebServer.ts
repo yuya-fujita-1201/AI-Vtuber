@@ -3,6 +3,8 @@ import { createServer, Server as HttpServer } from 'http';
 import path from 'path';
 import { Server as SocketIOServer } from 'socket.io';
 import { IAgentEventEmitter } from '../interfaces';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export class WebServer implements IAgentEventEmitter {
     private app: Express;
@@ -33,16 +35,16 @@ export class WebServer implements IAgentEventEmitter {
         this.httpServer = createServer(this.app);
         this.io = new SocketIOServer(this.httpServer, {
             cors: {
-                origin: '*'
+                origin: config.server.corsOrigin
             }
         });
 
         this.io.on('connection', (socket) => {
-            console.log(`[WebServer] Client connected: ${socket.id}`);
+            logger.info(`[WebServer] Client connected: ${socket.id}`);
             socket.emit('connected', { at: Date.now() });
 
             socket.on('disconnect', () => {
-                console.log(`[WebServer] Client disconnected: ${socket.id}`);
+                logger.info(`[WebServer] Client disconnected: ${socket.id}`);
             });
         });
 

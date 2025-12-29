@@ -1,5 +1,6 @@
 import { EmotionState } from '../core/EmotionEngine';
 import { OBSAdapter } from '../adapters/OBSAdapter';
+import { logger } from '../lib/logger';
 
 export type EmotionFilterConfig = {
   sourceName: string;
@@ -38,7 +39,7 @@ export class StageService {
   public async onStreamStop(): Promise<void> {
     const target = this.config.sceneEnding ?? this.config.sceneWaiting;
     if (!target) {
-      console.warn('[Stage] No ending/waiting scene configured');
+      logger.warn('[Stage] No ending/waiting scene configured');
       return;
     }
 
@@ -47,7 +48,7 @@ export class StageService {
 
   public async transitionToEnding(): Promise<void> {
     if (!this.config.sceneEnding) {
-      console.warn('[Stage] No ending scene configured');
+      logger.warn('[Stage] No ending scene configured');
       return;
     }
 
@@ -125,7 +126,7 @@ export class StageService {
         case '!scene': {
           const sceneName = parts.join(' ').trim();
           if (!sceneName) {
-            console.warn('[Stage] !scene requires a scene name');
+            logger.warn('[Stage] !scene requires a scene name');
             return true;
           }
           await this.adapter.switchScene(sceneName);
@@ -135,7 +136,7 @@ export class StageService {
           const alias = parts[0]?.toLowerCase();
           const sceneName = this.resolveStageScene(alias);
           if (!sceneName) {
-            console.warn('[Stage] !stage expects main|waiting|ending');
+            logger.warn('[Stage] !stage expects main|waiting|ending');
             return true;
           }
           await this.adapter.switchScene(sceneName);
@@ -143,18 +144,18 @@ export class StageService {
         }
         case '!source': {
           if (parts.length < 2) {
-            console.warn('[Stage] !source requires a source name and on/off');
+            logger.warn('[Stage] !source requires a source name and on/off');
             return true;
           }
           const visibilityToken = parts.pop();
           const visible = this.parseVisibility(visibilityToken);
           if (visible === null) {
-            console.warn('[Stage] !source visibility must be on/off');
+            logger.warn('[Stage] !source visibility must be on/off');
             return true;
           }
           const sourceName = parts.join(' ').trim();
           if (!sourceName) {
-            console.warn('[Stage] !source requires a source name');
+            logger.warn('[Stage] !source requires a source name');
             return true;
           }
           await this.adapter.toggleSource(sourceName, visible);
@@ -164,7 +165,7 @@ export class StageService {
           return false;
       }
     } catch (error) {
-      console.warn('[Stage] Command handling failed:', error);
+      logger.warn('[Stage] Command handling failed:', error);
       return true;
     }
   }

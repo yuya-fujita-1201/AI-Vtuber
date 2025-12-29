@@ -13,6 +13,8 @@ import { ExpressionService } from '../services/ExpressionService';
 import { StageService } from '../services/StageService';
 import { StorytellingService, StorytellingUpdate } from '../services/StorytellingService';
 import { prisma } from '../lib/prisma';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 type AgentOptions = {
     llmService?: ILLMService;
@@ -52,17 +54,18 @@ export class Agent {
     private currentEmotion: EmotionState = EmotionState.NEUTRAL;
     private narrativeContext?: NarrativeContext;
     private recentComments: ChatMessage[] = [];
-    private readonly recentCommentLimit = 20;
+    private readonly recentCommentLimit = config.agent.recentCommentLimit;
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
     private lastMonologueAt: number = 0;
-    private readonly monologueIntervalMs: number = 10_000;
-    private readonly monologueIntervalVarianceMs: number = 3_000;
+    private readonly monologueIntervalMs: number = config.agent.monologue.intervalMs;
+    private readonly monologueIntervalVarianceMs: number = config.agent.monologue.varianceMs;
     private nextMonologueDelayMs: number;
-    private readonly preSpeechDelayMinMs: number = 500;
-    private readonly preSpeechDelayMaxMs: number = 2_000;
-    private readonly errorCooldownMs: number = 10_000;
+    private readonly preSpeechDelayMinMs: number = config.agent.preSpeechDelayMs.min;
+    private readonly preSpeechDelayMaxMs: number = config.agent.preSpeechDelayMs.max;
+    private readonly errorCooldownMs: number = config.agent.errorCooldownMs;
+    private readonly tickIntervalMs: number = config.agent.tickIntervalMs;
     private readonly isDryRun: boolean;
     private lastErrorAt: Record<string, number> = {};
     private suppressedErrors: Record<string, number> = {};
@@ -101,14 +104,14 @@ export class Agent {
             llmService: this.llm,
             promptManager: this.promptManager
         });
-        this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        this.isDryRun = config.env.dryRun;
         this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
         this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
     }
 
     public async start() {
         this.isRunning = true;
-        console.log('[Agent] Started.');
+        logger.info('[Agent] Started.');
 
         if (this.stageService) {
             try {
@@ -122,7 +125,7 @@ export class Agent {
         if (this.memoryService) {
             try {
                 await this.memoryService.initialize();
-                console.log('[Agent] Memory service initialized');
+                logger.info('[Agent] Memory service initialized');
 
                 // Create a new stream session
                 const stream = await prisma.stream.create({
@@ -132,7 +135,7 @@ export class Agent {
                     },
                 });
                 this.currentStreamId = stream.id;
-                console.log(`[Agent] Stream session created: ${stream.id}`);
+                logger.info(`[Agent] Stream session created: ${stream.id}`);
             } catch (error) {
                 this.logError('memory.init', '[Agent] Memory initialization failed', error);
             }
@@ -144,13 +147,13 @@ export class Agent {
             } catch (error) {
                 this.logError('tick', '[Agent] tick failed', error);
             }
-            await this.sleep(1000); // 1秒ごとにループ (簡易実装)
+            await this.sleep(this.tickIntervalMs); // 1秒ごとにループ (簡易実装)
         }
     }
 
     public async stop() {
         this.isRunning = false;
-        console.log('[Agent] Stopping...');
+        logger.info('[Agent] Stopping...');
 
         if (this.stageService) {
             try {
@@ -169,7 +172,7 @@ export class Agent {
                     where: { id: this.currentStreamId },
                     data: { endedAt: new Date() },
                 });
-                console.log(`[Agent] Stream session ended: ${this.currentStreamId}`);
+                logger.info(`[Agent] Stream session ended: ${this.currentStreamId}`);
 
                 // Switch to ending scene
                 if (this.stageService) {
@@ -177,9 +180,9 @@ export class Agent {
                 }
 
                 await this.memoryService.disconnect();
-                console.log('[Agent] Memory service disconnected');
+                logger.info('[Agent] Memory service disconnected');
             } catch (error) {
-                console.error('[Agent] Error during shutdown:', error);
+                logger.error('[Agent] Error during shutdown:', error);
             }
         }
     }
@@ -203,7 +206,7 @@ export class Agent {
 
             if (intent === IntentType.SPAM || (isShort && !this.hasExclamation(msg.content))) {
                 await this.storeMessage(msg, CommentType.IGNORE);
-                console.log(`[Agent] Skipping comment (intent=${intent}, length=${msg.content.trim().length}).`);
+                logger.info(`[Agent] Skipping comment (intent=${intent}, length=${msg.content.trim().length}).`);
                 continue;
             }
 
@@ -337,7 +340,7 @@ export class Agent {
             const task = this.speechQueue.shift();
             if (!task) continue;
 
-            console.log(`[SPEAK] ${task.text}`);
+            logger.info(`[SPEAK] ${task.text}`);
 
             let audioData: Buffer;
             try {
@@ -350,7 +353,7 @@ export class Agent {
 
             if (!audioData || audioData.length === 0) {
                 if (!this.isDryRun) {
-                    console.warn('[Agent] Empty audio received. Skipping playback.');
+                    logger.warn('[Agent] Empty audio received. Skipping playback.');
                     continue;
                 }
 
@@ -384,7 +387,7 @@ export class Agent {
             try {
                 if (this.lipSyncService && audioData) {
                     this.lipSyncService.startSync(audioData).catch(err =>
-                        console.warn('[Agent] Lip sync start failed', err)
+                        logger.warn('[Agent] Lip sync start failed', err)
                     );
                 }
 
@@ -422,8 +425,8 @@ export class Agent {
     private applyEmotionUpdate(emotionUpdate: { state: EmotionState; voice: TTSOptions; changed: boolean }, previousEmotion: EmotionState) {
         this.currentVoiceOptions = { ...emotionUpdate.voice };
         if (emotionUpdate.changed) {
-            console.log(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
-            console.log(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
+            logger.info(`[Emotion] Current Emotion: ${emotionUpdate.state}`);
+            logger.info(`[Emotion] Voice params: pitch=${emotionUpdate.voice.pitch}, speed=${emotionUpdate.voice.speed}, intonation=${emotionUpdate.voice.intonation}`);
 
             this.currentEmotion = emotionUpdate.state;
 
@@ -435,13 +438,13 @@ export class Agent {
 
             if (this.expressionService) {
                 this.expressionService.onEmotionChanged(emotionUpdate.state).catch(err =>
-                    console.warn('[Agent] Expression change failed', err)
+                    logger.warn('[Agent] Expression change failed', err)
                 );
             }
 
             if (this.stageService) {
                 this.stageService.onEmotionChanged(emotionUpdate.state).catch(err =>
-                    console.warn('[Agent] Stage emotion change failed', err)
+                    logger.warn('[Agent] Stage emotion change failed', err)
                 );
             }
         } else {
@@ -473,7 +476,7 @@ export class Agent {
                     // CRITICAL: Filter by viewerId to prevent cross-user memory contamination
                     if (viewer) {
                         searchFilter.viewerId = viewer.id;
-                        console.log(`[Agent] Searching memories for viewer: ${msg.authorName} (${viewer.id})`);
+                        logger.info(`[Agent] Searching memories for viewer: ${msg.authorName} (${viewer.id})`);
                     }
 
                     // Also search for general conversation summaries (not viewer-specific)
@@ -545,7 +548,7 @@ export class Agent {
                 this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
                 if (this.stageService) {
                     this.stageService.onSectionChanged(currentSection).catch(err =>
-                        console.warn('[Agent] Stage section change failed', err)
+                        logger.warn('[Agent] Stage section change failed', err)
                     );
                 }
                 this.spine.getNextSection();
@@ -592,7 +595,7 @@ export class Agent {
     }
 
     private isShortComment(content: string): boolean {
-        return content.trim().length < 3;
+        return content.trim().length < config.agent.shortCommentLength;
     }
 
     private hasExclamation(content: string): boolean {
@@ -602,7 +605,7 @@ export class Agent {
     private getRandomMonologueIntervalMs(): number {
         const variance = (Math.random() * 2 - 1) * this.monologueIntervalVarianceMs;
         const interval = this.monologueIntervalMs + variance;
-        return Math.max(1_000, Math.round(interval));
+        return Math.max(config.agent.monologue.minIntervalMs, Math.round(interval));
     }
 
     private getRandomPreSpeechDelayMs(): number {
@@ -611,7 +614,10 @@ export class Agent {
     }
 
     private estimateSpeechDurationMs(text: string, audioData?: Buffer): number {
-        const fallback = Math.max(1_200, Math.round(text.length * 90));
+        const fallback = Math.max(
+            config.agent.speechDuration.fallbackMinMs,
+            Math.round(text.length * config.agent.speechDuration.perCharMs)
+        );
         if (!audioData || audioData.length < 44) {
             return fallback;
         }
@@ -713,7 +719,7 @@ export class Agent {
 
             // Store important messages as memories
             if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
-                const importance = type === CommentType.CHANGE_REQ ? 8 : 6;
+                const importance = type === CommentType.CHANGE_REQ\n+                    ? config.agent.memory.changeReqImportance\n+                    : config.agent.memory.onTopicImportance;
                 await this.memoryService.addMemory({
                     content: `${msg.authorName}さんのコメント: "${msg.content}"`,
                     type: MemoryType.CONVERSATION_SUMMARY,
@@ -738,10 +744,10 @@ export class Agent {
         if (now - last >= this.errorCooldownMs) {
             const suppressed = this.suppressedErrors[key] ?? 0;
             if (suppressed > 0) {
-                console.warn(`[Agent] Suppressed ${suppressed} errors for ${key}.`);
+                logger.warn(`[Agent] Suppressed ${suppressed} errors for ${key}.`);
                 this.suppressedErrors[key] = 0;
             }
-            console.error(message, error);
+            logger.error(message, error);
             this.lastErrorAt[key] = now;
             return;
         }
@@ -757,7 +763,7 @@ export class Agent {
         if (!this.memoryService || !this.currentStreamId) return;
 
         try {
-            console.log('[Agent] Consolidating stream memory...');
+            logger.info('[Agent] Consolidating stream memory...');
 
             // Get stream data
             const stream = await prisma.stream.findUnique({
@@ -765,13 +771,13 @@ export class Agent {
                 include: {
                     messages: {
                         orderBy: { createdAt: 'asc' },
-                        take: 100, // Limit to avoid token overflow
+                        take: config.agent.memory.consolidationMessageLimit, // Limit to avoid token overflow
                     },
                 },
             });
 
             if (!stream || !stream.messages.length) {
-                console.log('[Agent] No messages to consolidate');
+                logger.info('[Agent] No messages to consolidate');
                 return;
             }
 
@@ -796,8 +802,7 @@ ${messagesSummary}
 3. 視聴者からの重要な質問やリクエスト
 4. 次回に活かせるポイント`,
                 userPrompt: '上記の配信内容を2-3文で要約してください。',
-                temperature: 0.3,
-                maxTokens: 500,
+                temperature: config.agent.memory.consolidationTemperature,\n+                maxTokens: config.agent.memory.consolidationMaxTokens,
             };
 
             const summary = await this.llm.generateText(consolidationPrompt);
@@ -815,15 +820,9 @@ ${messagesSummary}
                 },
             });
 
-            console.log('[Agent] Stream memory consolidated successfully');
+            logger.info('[Agent] Stream memory consolidated successfully');
         } catch (error) {
             this.logError('memory.consolidate', '[Agent] Failed to consolidate stream memory', error);
         }
     }
 }
-
-const parseBoolean = (value?: string): boolean => {
-    if (!value) return false;
-    const normalized = value.trim().toLowerCase();
-    return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};
