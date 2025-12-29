@@ -3,6 +3,8 @@ import path from 'path';
 import { ChatMessage, ConversationVibe, LLMRequest, NarrativeContext, NarrativePhase, TopicState } from '../interfaces';
 import { SearchMemoryResult } from '../services/MemoryService';
 import { getSystemPrompt, AGENT_NAME } from '../prompts/system_prompt';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 const DEFAULT_MONOLOGUE_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n視聴者に楽しく、わかりやすく話してください。\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n- 完了したアウトライン:\n{{completedOutline}}\n- 残りのアウトライン:\n{{remainingOutline}}\n\n制約:\n- 1〜3文の自然な独り言で話す\n- 具体例や軽い感想を入れる\n- 口調は配信者らしく、明るく短め\n- 出力は本文のみ`;
 
@@ -39,8 +41,8 @@ export class PromptManager {
         return {
             systemPrompt,
             userPrompt: '上の条件に従って、今のセクションについて独り言を生成してください。',
-            temperature: 0.7,
-            maxTokens: 2048
+            temperature: config.prompts.monologue.temperature,
+            maxTokens: config.prompts.monologue.maxTokens
         };
     }
 
@@ -68,8 +70,8 @@ export class PromptManager {
         return {
             systemPrompt,
             userPrompt: '上の条件に従って、質問でも雑談でも自然にコメントへの返答を生成してください。',
-            temperature: 0.6,
-            maxTokens: 2048
+            temperature: config.prompts.reply.temperature,
+            maxTokens: config.prompts.reply.maxTokens
         };
     }
 
@@ -95,10 +97,10 @@ export class PromptManager {
             if (fs.existsSync(fullPath)) {
                 return fs.readFileSync(fullPath, 'utf-8');
             }
-            console.warn(`[PromptManager] Template not found: ${fullPath}. Using fallback.`);
+            logger.warn(`[PromptManager] Template not found: ${fullPath}. Using fallback.`);
             return fallback;
         } catch (error) {
-            console.error('[PromptManager] Failed to load prompt template', error);
+            logger.error('[PromptManager] Failed to load prompt template', error);
             return fallback;
         }
     }
@@ -192,7 +194,7 @@ export class PromptManager {
 
     public buildNarrativePrompt(input: NarrativePromptInput): LLMRequest {
         const recentLines = (input.recentComments ?? [])
-            .slice(-6)
+            .slice(-config.prompts.narrative.recentCommentLimit)
             .map(comment => `- ${comment.authorName}: ${comment.content}`)
             .join('\n');
 
@@ -222,8 +224,8 @@ export class PromptManager {
         return {
             systemPrompt,
             userPrompt,
-            temperature: 0.7,
-            maxTokens: 400
+            temperature: config.prompts.narrative.temperature,
+            maxTokens: config.prompts.narrative.maxTokens
         };
     }
 
@@ -233,7 +235,7 @@ export class PromptManager {
      */
     private formatMemories(memories: SearchMemoryResult[], comment?: ChatMessage): string {
         // Filter memories by relevance threshold (similarity > 0.7)
-        const relevantMemories = memories.filter(m => m.similarity > 0.7);
+        const relevantMemories = memories.filter(m => m.similarity > config.prompts.memory.relevanceThreshold);
 
         if (relevantMemories.length === 0) {
             return '（特に関連する記憶はありません）';
@@ -244,7 +246,7 @@ export class PromptManager {
         lines.push('');
 
         for (const memory of relevantMemories) {
-            const importance = '★'.repeat(Math.min(memory.importance, 5));
+            const importance = '★'.repeat(Math.min(memory.importance, config.prompts.memory.maxImportanceStars));
             const relevance = Math.round(memory.similarity * 100);
             lines.push(`- [${importance} | 関連度: ${relevance}%] ${memory.content}`);
         }

@@ -1,4 +1,6 @@
 import OBSWebSocket from 'obs-websocket-js';
+import { config as appConfig } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface OBSConfig {
   host?: string;
@@ -10,8 +12,8 @@ export class OBSAdapter {
   private obs: OBSWebSocket;
   private connected = false;
   private config: Required<OBSConfig> = {
-    host: '127.0.0.1',
-    port: 4455,
+    host: appConfig.adapters.obs.host,
+    port: appConfig.adapters.obs.port,
     password: ''
   };
   private sceneItemCache = new Map<string, number>();
@@ -21,7 +23,7 @@ export class OBSAdapter {
 
     this.obs.on('ConnectionClosed', () => {
       this.connected = false;
-      console.warn('[OBS] Connection closed');
+      logger.warn('[OBS] Connection closed');
     });
   }
 
@@ -30,15 +32,15 @@ export class OBSAdapter {
     const url = `ws://${this.config.host}:${this.config.port}`;
     const password = this.config.password?.trim() || undefined;
 
-    console.log(`[OBS] Connecting to ${url}...`);
+    logger.info(`[OBS] Connecting to ${url}...`);
 
     try {
       await this.obs.connect(url, password, { rpcVersion: 1 });
       this.connected = true;
-      console.log('[OBS] Connected');
+      logger.info('[OBS] Connected');
     } catch (error) {
       this.connected = false;
-      console.error('[OBS] Connection failed:', error);
+      logger.error('[OBS] Connection failed:', error);
       throw error;
     }
   }
@@ -61,42 +63,42 @@ export class OBSAdapter {
 
   async switchScene(sceneName: string): Promise<void> {
     if (!sceneName) {
-      console.warn('[OBS] switchScene called with empty sceneName');
+      logger.warn('[OBS] switchScene called with empty sceneName');
       return;
     }
     if (!this.connected) {
-      console.warn('[OBS] switchScene skipped (not connected)');
+      logger.warn('[OBS] switchScene skipped (not connected)');
       return;
     }
 
     try {
       await this.obs.call('SetCurrentProgramScene', { sceneName });
-      console.log(`[OBS] Switched to scene: ${sceneName}`);
+      logger.info(`[OBS] Switched to scene: ${sceneName}`);
     } catch (error) {
-      console.warn(`[OBS] Failed to switch scene to "${sceneName}":`, error);
+      logger.warn(`[OBS] Failed to switch scene to "${sceneName}":`, error);
     }
   }
 
   async toggleSource(sourceName: string, visible: boolean, sceneName?: string): Promise<void> {
     if (!sourceName) {
-      console.warn('[OBS] toggleSource called with empty sourceName');
+      logger.warn('[OBS] toggleSource called with empty sourceName');
       return;
     }
     if (!this.connected) {
-      console.warn('[OBS] toggleSource skipped (not connected)');
+      logger.warn('[OBS] toggleSource skipped (not connected)');
       return;
     }
 
     try {
       const targetScene = sceneName ?? (await this.getCurrentScene());
       if (!targetScene) {
-        console.warn('[OBS] toggleSource could not resolve current scene');
+        logger.warn('[OBS] toggleSource could not resolve current scene');
         return;
       }
 
       const sceneItemId = await this.getSceneItemId(targetScene, sourceName);
       if (sceneItemId === null) {
-        console.warn(`[OBS] Source not found in scene "${targetScene}": ${sourceName}`);
+        logger.warn(`[OBS] Source not found in scene "${targetScene}": ${sourceName}`);
         return;
       }
 
@@ -106,19 +108,19 @@ export class OBSAdapter {
         sceneItemEnabled: visible
       });
 
-      console.log(`[OBS] ${visible ? 'Show' : 'Hide'} source "${sourceName}" in scene "${targetScene}"`);
+      logger.info(`[OBS] ${visible ? 'Show' : 'Hide'} source "${sourceName}" in scene "${targetScene}"`);
     } catch (error) {
-      console.warn(`[OBS] Failed to toggle source "${sourceName}":`, error);
+      logger.warn(`[OBS] Failed to toggle source "${sourceName}":`, error);
     }
   }
 
   async setFilterEnabled(sourceName: string, filterName: string, enabled: boolean): Promise<void> {
     if (!sourceName || !filterName) {
-      console.warn('[OBS] setFilterEnabled called with empty source/filter');
+      logger.warn('[OBS] setFilterEnabled called with empty source/filter');
       return;
     }
     if (!this.connected) {
-      console.warn('[OBS] setFilterEnabled skipped (not connected)');
+      logger.warn('[OBS] setFilterEnabled skipped (not connected)');
       return;
     }
 
@@ -129,9 +131,9 @@ export class OBSAdapter {
         filterEnabled: enabled
       });
 
-      console.log(`[OBS] ${enabled ? 'Enabled' : 'Disabled'} filter "${filterName}" on "${sourceName}"`);
+      logger.info(`[OBS] ${enabled ? 'Enabled' : 'Disabled'} filter "${filterName}" on "${sourceName}"`);
     } catch (error) {
-      console.warn(`[OBS] Failed to set filter "${filterName}" on "${sourceName}":`, error);
+      logger.warn(`[OBS] Failed to set filter "${filterName}" on "${sourceName}":`, error);
     }
   }
 
@@ -140,7 +142,7 @@ export class OBSAdapter {
       const response = await this.obs.call('GetCurrentProgramScene');
       return response.currentProgramSceneName ?? null;
     } catch (error) {
-      console.warn('[OBS] Failed to get current scene:', error);
+      logger.warn('[OBS] Failed to get current scene:', error);
       return null;
     }
   }
@@ -160,7 +162,7 @@ export class OBSAdapter {
       }
       return null;
     } catch (error) {
-      console.warn(`[OBS] Failed to resolve scene item ID for "${sourceName}" in "${sceneName}":`, error);
+      logger.warn(`[OBS] Failed to resolve scene item ID for "${sourceName}" in "${sceneName}":`, error);
       this.sceneItemCache.delete(cacheKey);
       return null;
     }

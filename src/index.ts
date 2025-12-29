@@ -9,6 +9,8 @@ import { EmotionState } from './core/EmotionEngine';
 import { OBSAdapter } from './adapters/OBSAdapter';
 import { StageService } from './services/StageService';
 import { WebServer } from './server/WebServer';
+import { config as appConfig, configUtils } from './config/AppConfig';
+import { logger } from './lib/logger';
 
 type AdapterSetup = {
   adapter: IChatAdapter<any>;
@@ -23,24 +25,13 @@ const resolveAdapterType = (): 'MOCK' | 'YOUTUBE' => {
     return 'YOUTUBE';
   }
   if (normalized !== 'MOCK') {
-    console.warn(`[System] Unknown CHAT_ADAPTER "${raw}", falling back to MOCK.`);
+    logger.warn(`[System] Unknown CHAT_ADAPTER "${raw}", falling back to MOCK.`);
   }
   return 'MOCK';
 };
 
-const toNumber = (value: string | undefined, fallback: number): number => {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const toBoolean = (value: string | undefined): boolean => {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};
+const toBoolean = (value: string | undefined): boolean =>
+  configUtils.parseBoolean(value);
 
 const parseSectionSceneMap = (value: string | undefined): Record<string, string> | undefined => {
   if (!value) {
@@ -50,7 +41,7 @@ const parseSectionSceneMap = (value: string | undefined): Record<string, string>
   try {
     const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.warn('[System] OBS_SECTION_SCENE_MAP must be a JSON object');
+      logger.warn('[System] OBS_SECTION_SCENE_MAP must be a JSON object');
       return undefined;
     }
 
@@ -63,7 +54,7 @@ const parseSectionSceneMap = (value: string | undefined): Record<string, string>
 
     return Object.keys(map).length > 0 ? map : undefined;
   } catch (error) {
-    console.warn('[System] Failed to parse OBS_SECTION_SCENE_MAP:', error);
+    logger.warn('[System] Failed to parse OBS_SECTION_SCENE_MAP:', error);
     return undefined;
   }
 };
@@ -75,7 +66,7 @@ const setupAdapter = (): AdapterSetup => {
     const apiKey = process.env.YOUTUBE_API_KEY ?? '';
     const videoId = process.env.YOUTUBE_VIDEO_ID;
     const liveChatId = process.env.YOUTUBE_LIVE_CHAT_ID;
-    const pollingInterval = toNumber(process.env.YOUTUBE_POLLING_INTERVAL, 1000);
+    const pollingInterval = appConfig.adapters.youtube.pollingIntervalMs;
 
     if (!apiKey) {
       throw new Error('YOUTUBE_API_KEY is required for YOUTUBE adapter');
@@ -89,7 +80,7 @@ const setupAdapter = (): AdapterSetup => {
   }
 
   const filePath = process.env.MOCK_FILE_PATH ?? '';
-  const pollingInterval = toNumber(process.env.MOCK_POLLING_INTERVAL, 1000);
+  const pollingInterval = appConfig.adapters.fileReplay.pollingIntervalMs;
 
   if (!filePath) {
     throw new Error('MOCK_FILE_PATH is required for MOCK adapter');
@@ -103,9 +94,9 @@ const setupAdapter = (): AdapterSetup => {
 };
 
 const main = async () => {
-  const dryRun = toBoolean(process.env.DRY_RUN);
-  const webPort = toNumber(process.env.WEB_PORT ?? process.env.PORT, 3000);
-  const { adapter, config, label } = setupAdapter();
+  const dryRun = appConfig.env.dryRun;
+  const webPort = appConfig.server.webPort;
+  const { adapter, config: adapterConfig, label } = setupAdapter();
 
   let agent: Agent | null = null;
   let running = true;
@@ -119,7 +110,7 @@ const main = async () => {
     }
     shutdownStarted = true;
     running = false;
-    console.log('\n[System] Shutting down...');
+    logger.info('\n[System] Shutting down...');
 
     if (agent) {
       await agent.stop();
@@ -129,7 +120,7 @@ const main = async () => {
       try {
         await webServer.stop();
       } catch (error) {
-        console.error('[System] Web server shutdown error', error);
+        logger.error('[System] Web server shutdown error', error);
       }
     }
 
@@ -137,14 +128,14 @@ const main = async () => {
       try {
         await obsAdapter.disconnect();
       } catch (error) {
-        console.error('[System] OBS disconnect error', error);
+        logger.error('[System] OBS disconnect error', error);
       }
     }
 
     try {
       await adapter.disconnect();
     } catch (error) {
-      console.error('[System] Disconnect error', error);
+      logger.error('[System] Disconnect error', error);
     } finally {
       process.exit(0);
     }
@@ -153,15 +144,15 @@ const main = async () => {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log(`[System] Connecting adapter: ${label}`);
+  logger.info(`[System] Connecting adapter: ${label}`);
   if (label === 'YouTubeLiveAdapter') {
-    const conf = config as any;
-    console.log(`[System] Config check - VideoID: ${conf.videoId}, APIKey (len): ${conf.apiKey?.length}`);
+    const conf = adapterConfig as any;
+    logger.info(`[System] Config check - VideoID: ${conf.videoId}, APIKey (len): ${conf.apiKey?.length}`);
   }
-  await adapter.connect(config);
-  console.log(`[System] Adapter ready: ${label}`);
+  await adapter.connect(adapterConfig);
+  logger.info(`[System] Adapter ready: ${label}`);
   if (dryRun) {
-    console.log('[System] DRY_RUN enabled. LLM/TTS/playback are skipped.');
+    logger.info('[System] DRY_RUN enabled. LLM/TTS/playback are skipped.');
   }
 
   // Create and start Agent
@@ -170,7 +161,7 @@ const main = async () => {
 
   webServer = new WebServer();
   await webServer.start(webPort);
-  console.log(`[System] Web server running at http://localhost:${webPort}`);
+  logger.info(`[System] Web server running at http://localhost:${webPort}`);
 
   // VTube Studio integration
   const useVTS = toBoolean(process.env.VTS_ENABLED);
@@ -187,14 +178,14 @@ const main = async () => {
 
     try {
       await vtsAdapter.connect({
-        host: process.env.VTS_HOST || 'localhost',
-        port: toNumber(process.env.VTS_PORT, 8001),
+        host: appConfig.adapters.vts.host,
+        port: appConfig.adapters.vts.port,
         authToken: process.env.VTS_AUTH_TOKEN
       });
-      console.log('[System] VTube Studio adapter connected');
+      logger.info('[System] VTube Studio adapter connected');
 
       lipSyncService = new LipSyncService(vtsAdapter, {
-        volumeScale: toNumber(process.env.VTS_VOLUME_SCALE, 1.5)
+        volumeScale: appConfig.lipSync.volumeScale
       });
 
       expressionService = new ExpressionService(vtsAdapter, {
@@ -205,13 +196,13 @@ const main = async () => {
           [EmotionState.ANGRY]: process.env.VTS_HOTKEY_ANGRY || '',
           [EmotionState.EXCITED]: process.env.VTS_HOTKEY_EXCITED || ''
         },
-        debounceMs: 500
+        debounceMs: appConfig.expression.debounceMs
       });
 
-      console.log('[System] VTube Studio services initialized');
+      logger.info('[System] VTube Studio services initialized');
     } catch (error) {
-      console.error('[System] VTube Studio connection failed:', error);
-      console.warn('[System] Continuing without VTube Studio integration');
+      logger.error('[System] VTube Studio connection failed:', error);
+      logger.warn('[System] Continuing without VTube Studio integration');
       vtsAdapter = undefined;
       lipSyncService = undefined;
       expressionService = undefined;
@@ -226,8 +217,8 @@ const main = async () => {
 
     try {
       await obsAdapter.connect({
-        host: process.env.OBS_HOST || '127.0.0.1',
-        port: toNumber(process.env.OBS_PORT, 4455),
+        host: appConfig.adapters.obs.host,
+        port: appConfig.adapters.obs.port,
         password: process.env.OBS_WS_PASSWORD
       });
 
@@ -290,7 +281,7 @@ const main = async () => {
         process.env.OBS_FILTER_ANGRY ||
         process.env.OBS_FILTER_EXCITED
       ) {
-        console.warn('[System] OBS_FILTER_SOURCE is missing; emotion filters are ignored');
+        logger.warn('[System] OBS_FILTER_SOURCE is missing; emotion filters are ignored');
       }
 
       stageService = new StageService(obsAdapter, {
@@ -302,10 +293,10 @@ const main = async () => {
         emotionFilterMap: Object.keys(emotionFilterMap).length > 0 ? emotionFilterMap : undefined
       });
 
-      console.log('[System] OBS stage service initialized');
+      logger.info('[System] OBS stage service initialized');
     } catch (error) {
-      console.error('[System] OBS connection failed:', error);
-      console.warn('[System] Continuing without OBS integration');
+      logger.error('[System] OBS connection failed:', error);
+      logger.warn('[System] Continuing without OBS integration');
       obsAdapter = null;
       stageService = undefined;
     }
@@ -323,6 +314,6 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  console.error('[System] Fatal error', error);
+  logger.error('[System] Fatal error', error);
   process.exit(1);
 });

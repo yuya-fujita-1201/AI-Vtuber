@@ -1,5 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { ITTSService, TTSOptions } from '../interfaces';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export class VoicevoxService implements ITTSService {
     private client: AxiosInstance;
@@ -7,19 +9,18 @@ export class VoicevoxService implements ITTSService {
     private readonly isDryRun: boolean;
 
     constructor(baseUrl?: string, speakerId?: number) {
-        const resolvedBaseUrl = (baseUrl ?? process.env.VOICEVOX_BASE_URL ?? 'http://localhost:50021').replace(/\/+$/, '');
-        const envSpeaker = Number(process.env.VOICEVOX_SPEAKER_ID ?? '1');
-        const resolvedSpeaker = speakerId ?? (Number.isFinite(envSpeaker) ? envSpeaker : 1);
-        this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        const resolvedBaseUrl = (baseUrl ?? config.tts.voicevox.baseUrl).replace(/\/+$/, '');
+        const resolvedSpeaker = speakerId ?? config.tts.voicevox.speakerId;
+        this.isDryRun = config.env.dryRun;
 
         this.client = axios.create({
             baseURL: resolvedBaseUrl,
-            timeout: 15000
+            timeout: config.tts.voicevox.timeoutMs
         });
         this.speakerId = resolvedSpeaker;
 
         if (this.isDryRun) {
-            console.log('[VoicevoxService] DRY_RUN enabled. Skipping synthesis requests.');
+            logger.info('[VoicevoxService] DRY_RUN enabled. Skipping synthesis requests.');
         }
     }
 
@@ -46,7 +47,7 @@ export class VoicevoxService implements ITTSService {
 
             return Buffer.from(synthesisResponse.data);
         } catch (error) {
-            console.error('[VoicevoxService] synthesize failed', error);
+            logger.error('[VoicevoxService] synthesize failed', error);
             return Buffer.alloc(0);
         }
     }
@@ -97,9 +98,3 @@ export class VoicevoxService implements ITTSService {
         }
     }
 }
-
-const parseBoolean = (value?: string): boolean => {
-    if (!value) return false;
-    const normalized = value.trim().toLowerCase();
-    return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};

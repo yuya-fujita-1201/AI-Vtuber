@@ -2,6 +2,8 @@ import WebSocket from 'ws';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { IVisualOutputAdapter } from '../interfaces';
+import { config as appConfig } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface VTubeStudioConfig {
   host?: string;
@@ -41,36 +43,36 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
   private connected = false;
   private authenticated = false;
   private config: Required<VTubeStudioConfig> = {
-    host: 'localhost',
-    port: 8001,
-    pluginName: 'AI-VTuber',
-    pluginDeveloper: 'AI-VTuber Developer',
+    host: appConfig.adapters.vts.host,
+    port: appConfig.adapters.vts.port,
+    pluginName: appConfig.adapters.vts.pluginName,
+    pluginDeveloper: appConfig.adapters.vts.pluginDeveloper,
     authToken: ''
   };
   private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 5;
-  private readonly requestTimeoutMs = 5000;
+  private readonly maxReconnectAttempts = appConfig.adapters.vts.maxReconnectAttempts;
+  private readonly requestTimeoutMs = appConfig.adapters.vts.requestTimeoutMs;
 
   async connect(config: VTubeStudioConfig): Promise<void> {
     this.config = { ...this.config, ...config };
 
     const url = `ws://${this.config.host}:${this.config.port}`;
-    console.log(`[VTS] Connecting to ${url}...`);
+    logger.info(`[VTS] Connecting to ${url}...`);
 
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(url);
 
       this.ws.on('open', async () => {
-        console.log('[VTS] WebSocket connected');
+        logger.info('[VTS] WebSocket connected');
         this.connected = true;
         this.reconnectAttempts = 0;
 
         try {
           await this.authenticate();
-          console.log('[VTS] Authentication successful');
+          logger.info('[VTS] Authentication successful');
           resolve();
         } catch (error) {
-          console.error('[VTS] Authentication failed:', error);
+          logger.error('[VTS] Authentication failed:', error);
           reject(error);
         }
       });
@@ -80,14 +82,14 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
       });
 
       this.ws.on('error', (error: Error) => {
-        console.error('[VTS] WebSocket error:', error);
+        logger.error('[VTS] WebSocket error:', error);
         if (!this.connected) {
           reject(error);
         }
       });
 
       this.ws.on('close', () => {
-        console.log('[VTS] WebSocket closed');
+        logger.info('[VTS] WebSocket closed');
         this.connected = false;
         this.authenticated = false;
         this.handleReconnect();
@@ -96,7 +98,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
   }
 
   async disconnect(): Promise<void> {
-    console.log('[VTS] Disconnecting...');
+    logger.info('[VTS] Disconnecting...');
     this.connected = false;
     this.authenticated = false;
 
@@ -132,7 +134,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
         ]
       });
     } catch (error) {
-      console.warn(`[VTS] Failed to set parameter ${paramId}:`, error);
+      logger.warn(`[VTS] Failed to set parameter ${paramId}:`, error);
     }
   }
 
@@ -146,7 +148,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
         hotkeyID: hotkeyId
       });
     } catch (error) {
-      console.warn(`[VTS] Failed to trigger hotkey ${hotkeyId}:`, error);
+      logger.warn(`[VTS] Failed to trigger hotkey ${hotkeyId}:`, error);
     }
   }
 
@@ -165,7 +167,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
           return;
         }
       } catch (error) {
-        console.warn('[VTS] Stored token authentication failed, requesting new token');
+        logger.warn('[VTS] Stored token authentication failed, requesting new token');
       }
     }
 
@@ -176,16 +178,16 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
     // Save token to .env file
     try {
       await this.saveTokenToEnv(newToken);
-      console.log('[VTS] ============================================');
-      console.log('[VTS] NEW TOKEN RECEIVED AND SAVED!');
-      console.log(`[VTS] Token saved to .env file: VTS_AUTH_TOKEN=${newToken}`);
-      console.log('[VTS] ============================================');
+      logger.info('[VTS] ============================================');
+      logger.info('[VTS] NEW TOKEN RECEIVED AND SAVED!');
+      logger.info(`[VTS] Token saved to .env file: VTS_AUTH_TOKEN=${newToken}`);
+      logger.info('[VTS] ============================================');
     } catch (error) {
-      console.warn('[VTS] Failed to save token to .env file:', error);
-      console.log('[VTS] ============================================');
-      console.log('[VTS] NEW TOKEN RECEIVED! Please manually add to .env:');
-      console.log(`[VTS] VTS_AUTH_TOKEN=${newToken}`);
-      console.log('[VTS] ============================================');
+      logger.warn('[VTS] Failed to save token to .env file:', error);
+      logger.info('[VTS] ============================================');
+      logger.info('[VTS] NEW TOKEN RECEIVED! Please manually add to .env:');
+      logger.info(`[VTS] VTS_AUTH_TOKEN=${newToken}`);
+      logger.info('[VTS] ============================================');
     }
 
     // Authenticate with new token
@@ -263,7 +265,7 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
         }
       }
     } catch (error) {
-      console.error('[VTS] Failed to parse message:', error);
+      logger.error('[VTS] Failed to parse message:', error);
     }
   }
 
@@ -301,19 +303,22 @@ export class VTubeStudioAdapter implements IVisualOutputAdapter {
 
   private handleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[VTS] Max reconnection attempts reached');
+      logger.error('[VTS] Max reconnection attempts reached');
       return;
     }
 
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    const delay = Math.min(
+      appConfig.adapters.vts.reconnectBackoffBaseMs * Math.pow(2, this.reconnectAttempts),
+      appConfig.adapters.vts.reconnectBackoffMaxMs
+    );
     this.reconnectAttempts++;
 
-    console.log(`[VTS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    logger.info(`[VTS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     setTimeout(() => {
       if (!this.connected) {
         this.connect(this.config).catch((error) => {
-          console.error('[VTS] Reconnection failed:', error);
+          logger.error('[VTS] Reconnection failed:', error);
         });
       }
     }, delay);

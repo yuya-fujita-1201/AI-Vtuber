@@ -1,5 +1,7 @@
 import { IVisualOutputAdapter } from '../interfaces';
 import { VolumeAnalyzer, VolumeFrame } from './VolumeAnalyzer';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface LipSyncConfig {
   parameterId?: string;
@@ -16,14 +18,14 @@ export class LipSyncService {
   private isSyncing = false;
   private lastVolume = 0;
 
-  constructor(adapter: IVisualOutputAdapter, config?: LipSyncConfig) {
+  constructor(adapter: IVisualOutputAdapter, options?: LipSyncConfig) {
     this.adapter = adapter;
     this.analyzer = new VolumeAnalyzer();
     this.config = {
-      parameterId: config?.parameterId ?? 'MouthOpen',
-      frameDurationMs: config?.frameDurationMs ?? 16,
-      volumeScale: config?.volumeScale ?? 1.5,
-      smoothing: config?.smoothing ?? 0.3
+      parameterId: options?.parameterId ?? config.lipSync.parameterId,
+      frameDurationMs: options?.frameDurationMs ?? config.lipSync.frameDurationMs,
+      volumeScale: options?.volumeScale ?? config.lipSync.volumeScale,
+      smoothing: options?.smoothing ?? config.lipSync.smoothing
     };
   }
 
@@ -32,7 +34,7 @@ export class LipSyncService {
 
     const frames = this.analyzer.analyzeWav(audioBuffer, this.config.frameDurationMs);
     if (frames.length === 0) {
-      console.warn('[LipSync] No volume frames extracted');
+      logger.warn('[LipSync] No volume frames extracted');
       return;
     }
 
@@ -56,7 +58,7 @@ export class LipSyncService {
         const scaledVolume = Math.min(1, Math.max(0, smoothedVolume * this.config.volumeScale));
 
         this.adapter.setParameter(this.config.parameterId, scaledVolume).catch((err) => {
-          console.warn('[LipSync] Parameter update failed:', err);
+          logger.warn('[LipSync] Parameter update failed:', err);
         });
 
         this.lastVolume = smoothedVolume;
@@ -65,10 +67,10 @@ export class LipSyncService {
       this.activeTimers.push(timer);
     }
 
-    const finalDelay = frames[frames.length - 1].timeMs + 100;
+    const finalDelay = frames[frames.length - 1].timeMs + config.lipSync.finalDelayMs;
     const finalTimer = setTimeout(() => {
       this.adapter.setParameter(this.config.parameterId, 0).catch((err) => {
-        console.warn('[LipSync] Final parameter update failed:', err);
+        logger.warn('[LipSync] Final parameter update failed:', err);
       });
       this.isSyncing = false;
       this.lastVolume = 0;
@@ -91,7 +93,7 @@ export class LipSyncService {
     this.lastVolume = 0;
 
     this.adapter.setParameter(this.config.parameterId, 0).catch((err) => {
-      console.warn('[LipSync] Cancel parameter reset failed:', err);
+      logger.warn('[LipSync] Cancel parameter reset failed:', err);
     });
   }
 

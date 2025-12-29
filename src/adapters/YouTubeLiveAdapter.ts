@@ -1,5 +1,7 @@
 import { google, youtube_v3 } from 'googleapis';
 import { ChatMessage, IChatAdapter } from '../interfaces';
+import { config as appConfig } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export interface YouTubeLiveAdapterConfig {
   apiKey: string;
@@ -12,20 +14,20 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
   private youtube?: youtube_v3.Youtube;
   private liveChatId?: string;
   private nextPageToken?: string;
-  private pollingIntervalMs = 1000;
+  private pollingIntervalMs = appConfig.adapters.youtube.pollingIntervalMs;
   private nextAllowedAt = 0;
   private connected = false;
   private backoffMs = 0;
   private seenIds = new Set<string>();
 
-  async connect(config: YouTubeLiveAdapterConfig): Promise<void> {
-    if (!config?.apiKey) {
+  async connect(options: YouTubeLiveAdapterConfig): Promise<void> {
+    if (!options?.apiKey) {
       throw new Error('YouTubeLiveAdapter requires an apiKey');
     }
 
-    this.youtube = google.youtube({ version: 'v3', auth: config.apiKey });
-    this.pollingIntervalMs = config.pollingInterval ?? 1000;
-    this.liveChatId = config.liveChatId ?? (await this.resolveLiveChatId(config));
+    this.youtube = google.youtube({ version: 'v3', auth: options.apiKey });
+    this.pollingIntervalMs = options.pollingInterval ?? appConfig.adapters.youtube.pollingIntervalMs;
+    this.liveChatId = options.liveChatId ?? (await this.resolveLiveChatId(options));
 
     if (!this.liveChatId) {
       throw new Error('liveChatId could not be resolved. Set YOUTUBE_LIVE_CHAT_ID or YOUTUBE_VIDEO_ID.');
@@ -69,14 +71,16 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
         messages.push(message);
       }
 
-      if (this.seenIds.size > 5000) {
+      if (this.seenIds.size > appConfig.adapters.youtube.seenIdLimit) {
         this.seenIds.clear();
       }
 
       return messages;
     } catch (error) {
-      console.error('[YouTubeLiveAdapter] fetch error', error);
-      this.backoffMs = this.backoffMs === 0 ? 1000 : Math.min(this.backoffMs * 2, 60000);
+      logger.error('[YouTubeLiveAdapter] fetch error', error);
+      this.backoffMs = this.backoffMs === 0
+        ? appConfig.adapters.youtube.backoffInitialMs
+        : Math.min(this.backoffMs * 2, appConfig.adapters.youtube.backoffMaxMs);
       this.nextAllowedAt = Date.now() + this.backoffMs;
       await sleep(this.backoffMs);
       return [];
@@ -94,23 +98,23 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
 
     if (config.videoId) {
       try {
-        console.log(`[YouTubeLiveAdapter] Resolving chat ID for video: "${config.videoId}"`);
+        logger.info(`[YouTubeLiveAdapter] Resolving chat ID for video: "${config.videoId}"`);
         const response = await this.youtube.videos.list({
           part: ['liveStreamingDetails', 'snippet'],
           id: [config.videoId]
         });
         const items = response.data.items;
-        console.log(`[YouTubeLiveAdapter] API response items: ${items?.length ?? 0}`);
+        logger.info(`[YouTubeLiveAdapter] API response items: ${items?.length ?? 0}`);
 
         const liveDetails = items?.[0]?.liveStreamingDetails;
         if (liveDetails?.activeLiveChatId) {
-          console.log(`[YouTubeLiveAdapter] Found Chat ID: ${liveDetails.activeLiveChatId}`);
+          logger.info(`[YouTubeLiveAdapter] Found Chat ID: ${liveDetails.activeLiveChatId}`);
           return liveDetails.activeLiveChatId;
         } else {
-          console.warn('[YouTubeLiveAdapter] No activeLiveChatId found in liveDetails:', JSON.stringify(liveDetails, null, 2));
+          logger.warn('[YouTubeLiveAdapter] No activeLiveChatId found in liveDetails:', JSON.stringify(liveDetails, null, 2));
         }
       } catch (error) {
-        console.error('[YouTubeLiveAdapter] videos.list failed', error);
+        logger.error('[YouTubeLiveAdapter] videos.list failed', error);
       }
     }
 
@@ -119,14 +123,14 @@ export class YouTubeLiveAdapter implements IChatAdapter<YouTubeLiveAdapterConfig
         part: ['snippet'],
         broadcastStatus: 'active',
         broadcastType: 'all',
-        maxResults: 1
+        maxResults: appConfig.adapters.youtube.liveBroadcastMaxResults
       });
       const liveChatId = response.data.items?.[0]?.snippet?.liveChatId;
       if (liveChatId) {
         return liveChatId;
       }
     } catch (error) {
-      console.error('[YouTubeLiveAdapter] liveBroadcasts.list failed', error);
+      logger.error('[YouTubeLiveAdapter] liveBroadcasts.list failed', error);
     }
 
     return undefined;

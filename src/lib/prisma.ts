@@ -9,6 +9,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { logger } from './logger';
 
 // Extend globalThis to include prisma
 declare global {
@@ -34,7 +35,7 @@ if (process.env.NODE_ENV !== 'production') {
  */
 export async function disconnectPrisma() {
   await prisma.$disconnect();
-  console.log('[Prisma] Disconnected');
+  logger.info('[Prisma] Disconnected');
 }
 
 /**
@@ -44,9 +45,9 @@ export async function disconnectPrisma() {
 export async function initializeDatabase() {
   try {
     await prisma.$connect();
-    console.log('[Prisma] Connected to database');
+    logger.info('[Prisma] Connected to database');
   } catch (error) {
-    console.error('[Prisma] Failed to connect to database:', error);
+    logger.error('[Prisma] Failed to connect to database:', error);
     throw error;
   }
 }

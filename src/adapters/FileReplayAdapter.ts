@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { ChatMessage, IChatAdapter } from '../interfaces';
+import { config as appConfig } from '../config/AppConfig';
 
 export interface FileReplayAdapterConfig {
   filePath: string;
@@ -9,7 +10,7 @@ export interface FileReplayAdapterConfig {
 export class FileReplayAdapter implements IChatAdapter<FileReplayAdapterConfig> {
   private messages: ChatMessage[] = [];
   private cursor = 0;
-  private pollingInterval = 1000;
+  private pollingInterval = appConfig.adapters.fileReplay.pollingIntervalMs;
   private nextEmitAt = 0;
   private connected = false;
 
@@ -18,7 +19,7 @@ export class FileReplayAdapter implements IChatAdapter<FileReplayAdapterConfig> 
       throw new Error('FileReplayAdapter requires a filePath');
     }
 
-    this.pollingInterval = config.pollingInterval ?? 1000;
+    this.pollingInterval = config.pollingInterval ?? appConfig.adapters.fileReplay.pollingIntervalMs;
     const raw = await fs.readFile(config.filePath, 'utf-8');
     const parsed = JSON.parse(raw);
 

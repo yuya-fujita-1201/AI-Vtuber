@@ -3,6 +3,8 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { IAudioPlayer } from '../interfaces';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export class AudioPlayer implements IAudioPlayer {
     private currentPlayback: Promise<void> | null = null;
@@ -11,10 +13,10 @@ export class AudioPlayer implements IAudioPlayer {
 
     constructor(command?: string) {
         this.command = command ?? this.resolveDefaultCommand();
-        this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        this.isDryRun = config.env.dryRun;
 
         if (this.isDryRun) {
-            console.log('[AudioPlayer] DRY_RUN enabled. Skipping audio playback.');
+            logger.info('[AudioPlayer] DRY_RUN enabled. Skipping audio playback.');
         }
     }
 
@@ -36,7 +38,7 @@ export class AudioPlayer implements IAudioPlayer {
                 await fs.writeFile(tempPath, buffer);
                 await this.playFile(tempPath);
             } catch (error) {
-                console.error('[AudioPlayer] play failed', error);
+                logger.error('[AudioPlayer] play failed', error);
             } finally {
                 await fs.unlink(tempPath).catch(() => undefined);
             }
@@ -60,7 +62,7 @@ export class AudioPlayer implements IAudioPlayer {
             const child = spawn(this.command, [filePath], { stdio: 'ignore' });
 
             child.once('error', (error) => {
-                console.error(`[AudioPlayer] Failed to start ${this.command}`, error);
+                logger.error(`[AudioPlayer] Failed to start ${this.command}`, error);
                 resolve();
             });
 
@@ -84,9 +86,3 @@ export class AudioPlayer implements IAudioPlayer {
         return 'afplay';
     }
 }
-
-const parseBoolean = (value?: string): boolean => {
-    if (!value) return false;
-    const normalized = value.trim().toLowerCase();
-    return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};

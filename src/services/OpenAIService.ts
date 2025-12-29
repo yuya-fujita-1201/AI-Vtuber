@@ -1,5 +1,7 @@
 import OpenAI from 'openai';
 import { ILLMService, LLMRequest } from '../interfaces';
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
 
 export class OpenAIService implements ILLMService {
     private client: OpenAI | null;
@@ -10,18 +12,18 @@ export class OpenAIService implements ILLMService {
 
     constructor() {
         const apiKey = process.env.OPENAI_API_KEY;
-        this.isDryRun = parseBoolean(process.env.DRY_RUN);
+        this.isDryRun = config.env.dryRun;
         this.client = apiKey ? new OpenAI({ apiKey }) : null;
-        this.defaultModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+        this.defaultModel = config.openai.defaultModel;
         this.fallbackText = '（今はAI接続がないので、うまく喋れないみたい…）';
         this.dryRunText = '（DRY_RUNのため応答生成をスキップしました）';
 
         if (this.isDryRun) {
-            console.log('[OpenAIService] DRY_RUN enabled. Skipping OpenAI requests.');
+            logger.info('[OpenAIService] DRY_RUN enabled. Skipping OpenAI requests.');
         }
 
         if (!apiKey) {
-            console.warn('[OpenAIService] OPENAI_API_KEY is missing. Using fallback responses.');
+            logger.warn('[OpenAIService] OPENAI_API_KEY is missing. Using fallback responses.');
         }
     }
 
@@ -41,30 +43,24 @@ export class OpenAIService implements ILLMService {
                     { role: 'system', content: req.systemPrompt ?? '' },
                     { role: 'user', content: req.userPrompt ?? '' }
                 ],
-                temperature: 1,
-                max_completion_tokens: req.maxTokens ?? 1024,
+                temperature: req.temperature ?? config.openai.defaultTemperature,
+                max_completion_tokens: req.maxTokens ?? config.openai.defaultMaxTokens,
                 top_p: req.topP,
                 presence_penalty: req.presencePenalty,
                 frequency_penalty: req.frequencyPenalty
             });
-            // console.log('[OpenAIService] Response:', JSON.stringify(response, null, 2)); // Debug log
+            // logger.debug('[OpenAIService] Response:', JSON.stringify(response, null, 2)); // Debug log
 
             const text = response.choices?.[0]?.message?.content?.trim();
             if (!text) {
-                console.warn('[OpenAIService] Empty completion received. Full Response:', JSON.stringify(response, null, 2));
+                logger.warn('[OpenAIService] Empty completion received. Full Response:', JSON.stringify(response, null, 2));
                 return this.fallbackText;
             }
 
             return text;
         } catch (error: any) {
-            console.error('[OpenAIService] generateText failed', error.response?.data || error.message);
+            logger.error('[OpenAIService] generateText failed', error.response?.data || error.message);
             return this.fallbackText;
         }
     }
 }
-
-const parseBoolean = (value?: string): boolean => {
-    if (!value) return false;
-    const normalized = value.trim().toLowerCase();
-    return normalized === 'true' || normalized === '1' || normalized === 'yes';
-};

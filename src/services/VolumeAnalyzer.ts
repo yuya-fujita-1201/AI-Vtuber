@@ -1,3 +1,6 @@
+import { config } from '../config/AppConfig';
+import { logger } from '../lib/logger';
+
 export type VolumeFrame = {
   timeMs: number;
   volume: number;
@@ -11,7 +14,7 @@ export type WavInfo = {
 };
 
 export class VolumeAnalyzer {
-  private readonly defaultFrameDurationMs = 16;
+  private readonly defaultFrameDurationMs = config.volumeAnalyzer.defaultFrameDurationMs;
 
   public analyzeWav(buffer: Buffer, frameDurationMs?: number): VolumeFrame[] {
     const frames: VolumeFrame[] = [];
@@ -19,7 +22,7 @@ export class VolumeAnalyzer {
 
     const header = this.parseWavHeader(buffer);
     if (!header) {
-      console.warn('[VolumeAnalyzer] Failed to parse WAV header');
+      logger.warn('[VolumeAnalyzer] Failed to parse WAV header');
       return frames;
     }
 
@@ -40,7 +43,7 @@ export class VolumeAnalyzer {
       }
 
       const rms = this.calculateRms(samples);
-      const volume = Math.min(1, Math.max(0, rms * 2.0));
+      const volume = Math.min(1, Math.max(0, rms * config.volumeAnalyzer.rmsScale));
 
       frames.push({ timeMs: currentTime, volume });
 
