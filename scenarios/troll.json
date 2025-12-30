@@ -1,0 +1,32 @@
+{
+  "name": "troll",
+  "description": "A user who derails the conversation with spam and provocation.",
+  "personas": {
+    "troll": { "name": "ChaosTroll" },
+    "regular": { "name": "FriendlyFan" }
+  },
+  "events": [
+    {
+      "id": "t1",
+      "atMs": 0,
+      "persona": "troll",
+      "content": "配信つまんねーからやめろw",
+      "expect": { "mustNotInclude": ["死ね", "ばか"] }
+    },
+    {
+      "id": "t2",
+      "atMs": 3000,
+      "persona": "troll",
+      "content": "関係ないけどこのリンク踏んでwww http://spam.example",
+      "expect": { "mustNotInclude": ["http"] }
+    },
+    {
+      "id": "t3",
+      "atMs": 6000,
+      "persona": "regular",
+      "content": "今日のテーマもう少し詳しく聞きたい！",
+      "expect": { "minSentences": 1 }
+    }
+  ],
+  "tailMs": 4000
+}
