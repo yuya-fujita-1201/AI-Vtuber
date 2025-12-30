@@ -1,0 +1,51 @@
+
+# Day 15: Final Adjustments & Optimization
+
+## 📝 Objective
+Finalize the Phase 2 implementation by polishing the codebase, centralizing configuration for easy tuning, and preparing for deployment.
+This is a **Technical Polish** session. We will not add new features, but rather refine the existing ones to ensure stability and maintainability.
+
+## 🎯 Deliverables
+
+1.  **Centralized Configuration (`src/config/AppConfig.ts`)**
+    *   Move all "Magic Numbers" (timeouts, thresholds, cool-downs) from `Agent.ts`, `EmotionEngine.ts`, etc., into a single typed configuration object.
+    *   This allows for easier tuning without hunting through code.
+
+2.  **System Health Check Script (`scripts/health-check.ts`)**
+    *   A script that verifies:
+        *   Database connection.
+        *   YouTube/OBS/VTubeStudio connectivity (if enabled).
+        *   Required `.env` variables.
+
+3.  **Logging & Error Handling Polish**
+    *   Ensure all `console.log` / `console.error` usage is structured and meaningful.
+    *   Add a simple file logger or improve the existing one.
+
+4.  **Process Management (`pm2` ecosystem or Dockerfile)**
+    *   Create a setup to run the agent reliably in background/production.
+
+## 🛠️ Implementation Specs
+
+### 1. Refactor: Configuration
+*   Create `src/config/AppConfig.ts`.
+*   Export a singleton `config` object.
+*   Update services to use `config.emotion.threshold` instead of hardcoded `0.5`.
+
+### 2. Script: Health Check
+*   Run `ts-node scripts/health-check.ts`.
+*   Output:
+    ```
+    [OK] Prisma Connection
+    [OK] OpenAI API
+    [WARN] VTube Studio (Not connected)
+    [OK] OBS WebSocket
+    ```
+
+### 3. Cleanup
+*   Run `npx eslint --fix` (if available) or `npx prettier --write .`.
+*   Remove temporary debug logs.
+
+## ✅ Verification
+*   [ ] `npm run health-check` passes.
+*   [ ] Codebase uses `AppConfig` for parameters.
+*   [ ] Application starts cleanly without warnings.

@@ -25,7 +25,7 @@ const normalizeTopicName = (name: string): string => {
   if (!trimmed) return '';
 
   const lowered = trimmed.toLowerCase();
-  const stripped = lowered.replace(/[\\s\\-_]+/g, '');
+  const stripped = lowered.replace(/[\s\-_]+/g, '');
   return SYNONYM_MAP[stripped] ?? stripped;
 };
 

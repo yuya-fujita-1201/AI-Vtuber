@@ -1,5 +1,6 @@
 // Prisma Schema for AI VTuber Memory System
 // Database: SQLite (for simplicity and portability)
+// Can be switched to PostgreSQL for production
 // Purpose: Store structured memory data for long-term retention
 
 generator client {
@@ -197,23 +198,4 @@ model TopicHistory {
   @@index([lastDiscussedAt])
 }
 
-// ========================================
-// ANALYTICS & AGGREGATIONS (Optional)
-// ========================================
 
-/// Daily statistics for tracking engagement
-model DailyStats {
-  id          String   @id @default(cuid())
-  date        DateTime @unique // Date only (time truncated)
-
-  // Counts
-  messageCount    Int @default(0)
-  uniqueViewers   Int @default(0)
-  streamCount     Int @default(0)
-
-  // Engagement metrics
-  avgResponseTime Float?
-  topViewerName   String?
-
-  @@index([date])
-}

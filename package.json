@@ -22,7 +22,8 @@
     "obs-websocket-js": "^5.0.7",
     "openai": "^6.15.0",
     "socket.io": "^4.8.3",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

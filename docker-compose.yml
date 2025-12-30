@@ -15,3 +15,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+    container_name: ai_vtuber_voicevox
+    ports:
+      - "50021:50021"
+    restart: always

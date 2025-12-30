@@ -1,0 +1,32 @@
+[
+  {
+    "id": "1",
+    "authorName": "リスナーA",
+    "content": "こんにちは！配信楽しみにしてました！",
+    "timestamp": 1709251200000
+  },
+  {
+    "id": "2",
+    "authorName": "リスナーB",
+    "content": "今日のテーマは何ですか？",
+    "timestamp": 1709251205000
+  },
+  {
+    "id": "3",
+    "authorName": "リスナーC",
+    "content": "音質めっちゃいいですね！",
+    "timestamp": 1709251210000
+  },
+  {
+    "id": "4",
+    "authorName": "リスナーA",
+    "content": "初見です、応援してます！",
+    "timestamp": 1709251215000
+  },
+  {
+    "id": "5",
+    "authorName": "リスナーB",
+    "content": "質問です！好きな食べ物は？",
+    "timestamp": 1709251220000
+  }
+]

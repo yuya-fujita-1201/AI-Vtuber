@@ -26,6 +26,10 @@ export type AppConfig = {
   agent: {
     tickIntervalMs: number;
     recentCommentLimit: number;
+    commentQueue: {
+      maxSize: number;
+      processingIntervalMs: number;
+    };
     maxCommentsPerTick: number;
     monologue: {
       intervalMs: number;
@@ -215,6 +219,7 @@ export type AppConfig = {
     searchLimit: number;
     streamMemoriesLimit: number;
     viewerMemoriesLimit: number;
+    shortTermLimit: number;
     pruning: {
       decayDays: number;
       threshold: number;
@@ -225,6 +230,12 @@ export type AppConfig = {
   };
   llm: {
     provider: 'openai' | 'groq' | 'grok';
+    requestTimeoutMs: number;
+    retry: {
+      maxAttempts: number;
+      baseDelayMs: number;
+      maxDelayMs: number;
+    };
   };
   openai: {
     apiKey: string;
@@ -310,6 +321,10 @@ export const config: AppConfig = {
   agent: {
     tickIntervalMs: parseNumber(process.env.AGENT_TICK_INTERVAL_MS, 1000),
     recentCommentLimit: parseNumber(process.env.AGENT_RECENT_COMMENT_LIMIT, 20),
+    commentQueue: {
+      maxSize: parseNumber(process.env.AGENT_COMMENT_QUEUE_MAX_SIZE, 200),
+      processingIntervalMs: parseNumber(process.env.AGENT_COMMENT_PROCESSING_INTERVAL_MS, 2500)
+    },
     maxCommentsPerTick: parseNumber(process.env.AGENT_MAX_COMMENTS_PER_TICK, 6),
     monologue: {
       intervalMs: parseNumber(process.env.AGENT_MONOLOGUE_INTERVAL_MS, 10_000),
@@ -505,6 +520,7 @@ export const config: AppConfig = {
     searchLimit: parseNumber(process.env.MEMORY_SEARCH_LIMIT, 5),
     streamMemoriesLimit: parseNumber(process.env.MEMORY_STREAM_LIMIT, 10),
     viewerMemoriesLimit: parseNumber(process.env.MEMORY_VIEWER_LIMIT, 10),
+    shortTermLimit: parseNumber(process.env.MEMORY_STM_LIMIT, 25),
     pruning: {
       decayDays: parseNumber(process.env.MEMORY_PRUNE_DECAY_DAYS, 30),
       threshold: parseNumber(process.env.MEMORY_PRUNE_THRESHOLD, 0.3)
@@ -514,7 +530,13 @@ export const config: AppConfig = {
     traitCacheTtlMs: parseNumber(process.env.CHARACTER_TRAIT_CACHE_TTL_MS, 300_000)
   },
   llm: {
-    provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok')
+    provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok'),
+    requestTimeoutMs: parseNumber(process.env.LLM_REQUEST_TIMEOUT_MS, 15_000),
+    retry: {
+      maxAttempts: parseNumber(process.env.LLM_RETRY_MAX_ATTEMPTS, 3),
+      baseDelayMs: parseNumber(process.env.LLM_RETRY_BASE_DELAY_MS, 500),
+      maxDelayMs: parseNumber(process.env.LLM_RETRY_MAX_DELAY_MS, 4_000)
+    }
   },
   openai: {
     apiKey: parseString(process.env.OPENAI_API_KEY, ''),

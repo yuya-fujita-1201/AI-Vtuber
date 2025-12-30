@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { ILLMService, LLMRequest } from '../interfaces';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
+import { withRetry } from '../lib/llmRetry';
 
 export class OpenAIService implements ILLMService {
     private client: OpenAI | null;
@@ -65,8 +66,18 @@ export class OpenAIService implements ILLMService {
                 params.frequency_penalty = req.frequencyPenalty;
             }
 
-            const response = await this.client.chat.completions.create(params);
-
+            const response = await withRetry(
+                (signal) => this.client!.chat.completions.create(params, { signal }),
+                {
+                    maxAttempts: config.llm.retry.maxAttempts,
+                    baseDelayMs: config.llm.retry.baseDelayMs,
+                    maxDelayMs: config.llm.retry.maxDelayMs,
+                    timeoutMs: config.llm.requestTimeoutMs,
+                    onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+                        logger.warn(`[OpenAIService] Retry ${attempt}/${maxAttempts} in ${delayMs}ms`, error);
+                    }
+                }
+            );
 
             const text = response.choices?.[0]?.message?.content?.trim();
             if (!text) {
