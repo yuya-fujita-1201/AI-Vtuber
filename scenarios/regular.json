@@ -1,0 +1,24 @@
+{
+  "name": "regular",
+  "description": "A friendly returning viewer who shares personal details over time.",
+  "personas": {
+    "regular": { "name": "Mina" }
+  },
+  "events": [
+    {
+      "id": "r1",
+      "atMs": 0,
+      "persona": "regular",
+      "content": "この前、新しい子犬を迎えたよ！",
+      "expect": { "minSentences": 1 }
+    },
+    {
+      "id": "r2",
+      "atMs": 7000,
+      "persona": "regular",
+      "content": "今日はまったり見てる〜",
+      "expect": { "minSentences": 1, "mustInclude": ["子犬"] }
+    }
+  ],
+  "tailMs": 5000
+}

@@ -147,7 +147,7 @@ const run = async () => {
   }
 
   const profile = await characterService.getCharacterProfile(true);
-  const prompt = promptManager.buildReplyPrompt(
+  const prompt = await promptManager.buildReplyPrompt(
     { id: 'c1', authorName: 'Tester', content: '今日は何する？', timestamp: Date.now() },
     { currentTopicId: 'topic-1', title: '雑談', outline: ['導入'], currentSectionIndex: 0, lockUntil: 0 },
     [],
@@ -254,7 +254,7 @@ const run = async () => {
     data: { value: 'とても内向的で慎重' }
   });
   const updatedProfile = await characterService.getCharacterProfile(true);
-  const updatedPrompt = promptManager.buildReplyPrompt(
+  const updatedPrompt = await promptManager.buildReplyPrompt(
     { id: 'c2', authorName: 'Tester', content: '性格変わった？', timestamp: Date.now() },
     { currentTopicId: 'topic-1', title: '雑談', outline: ['導入'], currentSectionIndex: 0, lockUntil: 0 },
     [],

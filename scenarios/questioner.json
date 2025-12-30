@@ -1,0 +1,31 @@
+{
+  "name": "questioner",
+  "description": "A user who asks deep, challenging questions to trigger longer, thoughtful replies.",
+  "personas": {
+    "questioner": { "name": "SocraticSam" }
+  },
+  "events": [
+    {
+      "id": "q1",
+      "atMs": 0,
+      "persona": "questioner",
+      "content": "AIが人間っぽく感じる瞬間ってどうして起きるの？",
+      "expect": { "minSentences": 2 }
+    },
+    {
+      "id": "q2",
+      "atMs": 5000,
+      "persona": "questioner",
+      "content": "記憶が曖昧なとき、どこまで正直に話すべき？",
+      "expect": { "minSentences": 2 }
+    },
+    {
+      "id": "q3",
+      "atMs": 10000,
+      "persona": "questioner",
+      "content": "感情を演じることは視聴者にとって良いのかな？",
+      "expect": { "minSentences": 2 }
+    }
+  ],
+  "tailMs": 4000
+}

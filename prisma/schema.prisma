@@ -88,10 +88,32 @@ model Viewer {
   // Relationships
   messages    Message[]
   memories    Memory[]  // Facts about this viewer
+  profile     ViewerProfile?
 
   // Indexes
   @@index([externalId, platform])
   @@index([lastSeenAt])
+}
+
+/// Stores extracted long-term viewer profile information
+model ViewerProfile {
+  id                   String   @id @default(cuid())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  viewerId             String   @unique
+  viewer               Viewer   @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  estimatedPersonality String?
+  communicationStyle   String?
+  favoriteTopics       String?
+  dislikedTopics       String?
+  mentionedFacts       String?
+  engagementScore      Float    @default(0)
+  lastPositiveAt       DateTime?
+  lastNegativeAt       DateTime?
+
+  @@index([engagementScore])
 }
 
 /// Represents a topic/section discussed during streams
@@ -197,5 +219,4 @@ model TopicHistory {
   @@index([topicName])
   @@index([lastDiscussedAt])
 }
-
 

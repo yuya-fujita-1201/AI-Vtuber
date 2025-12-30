@@ -14,6 +14,7 @@ import { ExpressionService } from '../services/ExpressionService';
 import { StageService } from '../services/StageService';
 import { StorytellingService, StorytellingUpdate } from '../services/StorytellingService';
 import { LLMClassifierService } from '../services/LLMClassifierService';
+import { ViewerProfileService } from '../services/ViewerProfileService';
 import { prisma } from '../lib/prisma';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
@@ -27,6 +28,7 @@ type AgentOptions = {
     memoryService?: MemoryService;
     characterService?: CharacterService;
     topicService?: TopicService;
+    viewerProfileService?: ViewerProfileService;
     eventEmitter?: IAgentEventEmitter;
     visualAdapter?: IVisualOutputAdapter;
     lipSyncService?: LipSyncService;
@@ -46,6 +48,7 @@ export class Agent {
     private memoryService?: MemoryService;
     private characterService?: CharacterService;
     private topicService?: TopicService;
+    private viewerProfileService?: ViewerProfileService;
     private eventEmitter?: IAgentEventEmitter;
     private visualAdapter?: IVisualOutputAdapter;
     private lipSyncService?: LipSyncService;
@@ -105,13 +108,14 @@ export class Agent {
 
         const {
             llmService = defaultLLM,
-            promptManager = new PromptManager(),
+            promptManager,
             classifierService = new LLMClassifierService(),
             ttsService = new VoicevoxService(),
             audioPlayer = new AudioPlayer(),
             memoryService,
             characterService = new CharacterService(),
             topicService = new TopicService(),
+            viewerProfileService,
             eventEmitter,
             visualAdapter,
             lipSyncService,
@@ -125,7 +129,9 @@ export class Agent {
         this.emotionEngine = new EmotionEngine();
         this.llm = llmService;
         this.classifier = classifierService;
-        this.promptManager = promptManager;
+        this.viewerProfileService = viewerProfileService ?? new ViewerProfileService({ llmService: this.llm });
+        this.promptManager = promptManager ?? new PromptManager({ viewerProfileService: this.viewerProfileService });
+        this.promptManager.setViewerProfileService(this.viewerProfileService);
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
         this.memoryService = memoryService;
@@ -157,25 +163,31 @@ export class Agent {
             }
         }
 
-        // Initialize memory service and create stream session
+        // Initialize memory service (if enabled)
         if (this.memoryService) {
             try {
                 await this.memoryService.initialize();
                 logger.info('[Agent] Memory service initialized');
-
-                // Create a new stream session
-                const stream = await prisma.stream.create({
-                    data: {
-                        title: this.spine.currentState.title,
-                        platform: process.env.CHAT_ADAPTER || 'mock',
-                    },
-                });
-                this.currentStreamId = stream.id;
-                logger.info(`[Agent] Stream session created: ${stream.id}`);
-                this.memoryService.clearShortTermMemory();
             } catch (error) {
                 this.logError('memory.init', '[Agent] Memory initialization failed', error);
             }
+        }
+
+        // Create a new stream session (independent of memory service)
+        try {
+            const stream = await prisma.stream.create({
+                data: {
+                    title: this.spine.currentState.title,
+                    platform: process.env.CHAT_ADAPTER || 'mock',
+                },
+            });
+            this.currentStreamId = stream.id;
+            logger.info(`[Agent] Stream session created: ${stream.id}`);
+            if (this.memoryService) {
+                this.memoryService.clearShortTermMemory();
+            }
+        } catch (error) {
+            this.logError('stream.init', '[Agent] Stream session creation failed', error);
         }
 
         this.startCommentWorker();
@@ -384,6 +396,12 @@ export class Agent {
         // Store message in database
         const viewerId = await this.storeMessage(msg, type);
 
+        if (viewerId && this.viewerProfileService) {
+            this.viewerProfileService.updateProfile(viewerId, msg.content).catch(error =>
+                logger.warn('[Agent] Viewer profile update failed', error)
+            );
+        }
+
         if (config.agent.topicHistory.enabled && this.topicService) {
             const topicName = classification.topic?.trim()
                 || this.narrativeContext?.theme
@@ -422,7 +440,7 @@ export class Agent {
         } else {
             switch (type) {
                 case CommentType.ON_TOPIC:
-                    responseText = await this.generateReply(msg, type);
+                    responseText = await this.generateReply(msg, type, viewerId);
                     priority = 'HIGH';
                     break;
                 case CommentType.REACTION:
@@ -582,7 +600,7 @@ export class Agent {
         }
     }
 
-    private async generateReply(msg: ChatMessage, type?: CommentType) {
+    private async generateReply(msg: ChatMessage, type?: CommentType, viewerId?: string | null) {
         this.emitEvent('thinking', {
             mode: 'reply',
             commentId: msg.id,
@@ -592,28 +610,28 @@ export class Agent {
         });
 
         try {
+            let resolvedViewerId = viewerId ?? null;
+            if (!resolvedViewerId) {
+                const viewer = await prisma.viewer.findFirst({
+                    where: { name: msg.authorName },
+                });
+                resolvedViewerId = viewer?.id ?? null;
+            }
+
             // Search for relevant memories with proper viewerId filtering
             let relevantMemories: any[] = [];
             if (this.memoryService) {
                 try {
-                    // Get viewer to filter memories by viewerId (prevent memory mixing!)
-                    const viewer = await prisma.viewer.findFirst({
-                        where: { name: msg.authorName },
-                    });
-
-                    const searchFilter: any = {};
-
                     // CRITICAL: Filter by viewerId to prevent cross-user memory contamination
-                    if (viewer) {
-                        searchFilter.viewerId = viewer.id;
-                        logger.info(`[Agent] Searching memories for viewer: ${msg.authorName} (${viewer.id})`);
+                    if (resolvedViewerId) {
+                        logger.info(`[Agent] Searching memories for viewer: ${msg.authorName} (${resolvedViewerId})`);
                     }
 
                     // Also search for general conversation summaries (not viewer-specific)
-                    const viewerMemories = viewer ? await this.memoryService.searchMemory(
+                    const viewerMemories = resolvedViewerId ? await this.memoryService.searchMemory(
                         msg.content,
                         3,
-                        { type: MemoryType.VIEWER_INFO, viewerId: viewer.id }
+                        { type: MemoryType.VIEWER_INFO, viewerId: resolvedViewerId }
                     ) : [];
 
                     const conversationMemories = await this.memoryService.searchMemory(
@@ -664,15 +682,24 @@ export class Agent {
             }
 
             // Build prompt with memories integrated by PromptManager
-            const prompt = this.promptManager.buildReplyPrompt(
+            const emotionState = this.emotionEngine.getCurrentState();
+            const conversationVibe = this.storytellingService?.getNarrativeContext().vibe ?? this.narrativeContext?.vibe;
+
+            const prompt = await this.promptManager.buildReplyPrompt(
                 msg,
                 this.spine.currentState,
                 relevantMemories,
                 this.narrativeContext,
                 characterProfile,
-                topicHistory
+                topicHistory,
+                {
+                    emotionState,
+                    conversationVibe,
+                    viewerId: resolvedViewerId ?? undefined
+                }
             );
 
+            logger.info(`[Agent] LLM system prompt (reply):\n${prompt.systemPrompt}`);
             const text = await this.llm.generateText(prompt);
             return text.trim();
         } catch (error) {
@@ -718,12 +745,18 @@ export class Agent {
                 }
             }
 
+            const emotionState = this.emotionEngine.getCurrentState();
+            const conversationVibe = this.storytellingService?.getNarrativeContext().vibe ?? this.narrativeContext?.vibe;
+
             const prompt = this.promptManager.buildMonologuePrompt(
                 currentState,
                 this.narrativeContext,
                 characterProfile,
-                topicHistory
+                topicHistory,
+                emotionState,
+                conversationVibe
             );
+            logger.info(`[Agent] LLM system prompt (monologue):\n${prompt.systemPrompt}`);
             const text = await this.llm.generateText(prompt);
             if (text.trim()) {
                 this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
@@ -880,7 +913,7 @@ export class Agent {
      * Store message in database and create memory if important
      */
     private async storeMessage(msg: ChatMessage, type: CommentType): Promise<string | null> {
-        if (!this.memoryService || !this.currentStreamId) return null;
+        if (!this.currentStreamId) return null;
 
         try {
             // Find or create viewer
@@ -919,7 +952,7 @@ export class Agent {
             });
 
             // Store important messages as memories
-            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
+            if (this.memoryService && (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ)) {
                 const importance = type === CommentType.CHANGE_REQ
                     ? config.agent.memory.changeReqImportance
                     : config.agent.memory.onTopicImportance;
