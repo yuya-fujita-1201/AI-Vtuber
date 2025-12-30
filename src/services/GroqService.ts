@@ -2,6 +2,7 @@ import Groq from 'groq-sdk';
 import { ILLMService, LLMRequest } from '../interfaces';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
+import { withRetry } from '../lib/llmRetry';
 
 export class GroqService implements ILLMService {
     private client: Groq | null;
@@ -37,7 +38,7 @@ export class GroqService implements ILLMService {
         }
 
         try {
-            const response = await this.client.chat.completions.create({
+            const params = {
                 model: req.model ?? this.defaultModel,
                 messages: [
                     { role: 'system', content: req.systemPrompt ?? '' },
@@ -48,7 +49,20 @@ export class GroqService implements ILLMService {
                 top_p: req.topP,
                 presence_penalty: req.presencePenalty,
                 frequency_penalty: req.frequencyPenalty
-            });
+            };
+
+            const response = await withRetry(
+                (_signal) => this.client!.chat.completions.create(params as any),
+                {
+                    maxAttempts: config.llm.retry.maxAttempts,
+                    baseDelayMs: config.llm.retry.baseDelayMs,
+                    maxDelayMs: config.llm.retry.maxDelayMs,
+                    timeoutMs: config.llm.requestTimeoutMs,
+                    onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+                        logger.warn(`[GroqService] Retry ${attempt}/${maxAttempts} in ${delayMs}ms`, error);
+                    }
+                }
+            );
 
             const text = response.choices[0]?.message?.content?.trim();
             if (!text) {

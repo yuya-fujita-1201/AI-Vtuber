@@ -81,6 +81,19 @@ export enum CommentType {
   IGNORE = 'IGNORE'
 }
 
+export type EmotionScores = {
+  positive: number;
+  negative: number;
+  neutral: number;
+};
+
+export interface ClassificationResult {
+  intent: string[];
+  emotion: EmotionScores;
+  topic: string;
+  commentType: CommentType;
+}
+
 export type NarrativePhase = 'Casual Opening' | 'Deep Dive' | 'Heated Debate' | 'Cozy Closing';
 
 export type ConversationVibe = 'CALM' | 'EXCITED' | 'HEATED' | 'COZY';

@@ -1,5 +1,4 @@
 import { EmotionEngine, EmotionState } from './src/core/EmotionEngine';
-import { IntentClassifier, IntentType } from './src/core/IntentClassifier';
 
 const assert = (condition: boolean, message: string) => {
   if (!condition) {
@@ -31,27 +30,8 @@ const runEmotionTests = () => {
   console.log('✅ EmotionEngine transitions look correct.\n');
 };
 
-const runIntentTests = () => {
-  console.log('========================================');
-  console.log('IntentClassifier Unit Test');
-  console.log('========================================');
-
-  const classifier = new IntentClassifier();
-  const helloIntent = classifier.classify('Hello');
-  assert(helloIntent === IntentType.GREETING, `Expected GREETING, got ${helloIntent}`);
-
-  const wwwIntent = classifier.classify('www');
-  assert(
-    wwwIntent === IntentType.SPAM || wwwIntent === IntentType.OTHER,
-    `Expected SPAM/OTHER, got ${wwwIntent}`
-  );
-
-  console.log('✅ IntentClassifier labels look correct.\n');
-};
-
 try {
   runEmotionTests();
-  runIntentTests();
   console.log('All tests passed ✅');
 } catch (error) {
   console.error('Test failed ❌', error);

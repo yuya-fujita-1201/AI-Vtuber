@@ -1,8 +1,6 @@
-import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions, IVisualOutputAdapter, NarrativeContext } from '../interfaces';
+import { IChatAdapter, SpeechTask, CommentType, ILLMService, ChatMessage, ITTSService, IAudioPlayer, IAgentEventEmitter, TTSOptions, IVisualOutputAdapter, NarrativeContext, ClassificationResult } from '../interfaces';
 import { TopicSpine } from './TopicSpine';
-import { CommentRouter } from './CommentRouter';
 import { EmotionEngine, EmotionState } from './EmotionEngine';
-import { IntentClassifier, IntentType } from './IntentClassifier';
 import { OpenAIService } from '../services/OpenAIService';
 import { GroqService } from '../services/GroqService';
 import { VoicevoxService } from '../services/VoicevoxService';
@@ -13,6 +11,7 @@ import { LipSyncService } from '../services/LipSyncService';
 import { ExpressionService } from '../services/ExpressionService';
 import { StageService } from '../services/StageService';
 import { StorytellingService, StorytellingUpdate } from '../services/StorytellingService';
+import { LLMClassifierService } from '../services/LLMClassifierService';
 import { prisma } from '../lib/prisma';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
@@ -20,6 +19,7 @@ import { logger } from '../lib/logger';
 type AgentOptions = {
     llmService?: ILLMService;
     promptManager?: PromptManager;
+    classifierService?: LLMClassifierService;
     ttsService?: ITTSService;
     audioPlayer?: IAudioPlayer;
     memoryService?: MemoryService;
@@ -34,8 +34,8 @@ type AgentOptions = {
 export class Agent {
     private adapter: IChatAdapter;
     private spine: TopicSpine;
-    private router: CommentRouter;
     private llm: ILLMService;
+    private classifier: LLMClassifierService;
     private tts: ITTSService;
     private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
@@ -48,17 +48,21 @@ export class Agent {
     private storytellingService?: StorytellingService;
     private speechQueue: SpeechTask[] = [];
     private pendingComments: ChatMessage[] = [];
+    private commentQueue: ChatMessage[] = [];
     private currentStreamId?: string;
     private emotionEngine: EmotionEngine;
-    private intentClassifier: IntentClassifier;
     private currentVoiceOptions: TTSOptions;
     private currentEmotion: EmotionState = EmotionState.NEUTRAL;
     private narrativeContext?: NarrativeContext;
     private recentComments: ChatMessage[] = [];
     private readonly recentCommentLimit = config.agent.recentCommentLimit;
+    private readonly commentQueueMaxSize = config.agent.commentQueue.maxSize;
+    private readonly commentProcessingIntervalMs = config.agent.commentQueue.processingIntervalMs;
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
+    private commentWorkerRunning: boolean = false;
+    private speechWorkerRunning: boolean = false;
     private lastMonologueAt: number = 0;
     private readonly monologueIntervalMs: number = config.agent.monologue.intervalMs;
     private readonly monologueIntervalVarianceMs: number = config.agent.monologue.varianceMs;
@@ -96,6 +100,7 @@ export class Agent {
         const {
             llmService = defaultLLM,
             promptManager = new PromptManager(),
+            classifierService = new LLMClassifierService(),
             ttsService = new VoicevoxService(),
             audioPlayer = new AudioPlayer(),
             memoryService,
@@ -109,10 +114,9 @@ export class Agent {
 
         this.adapter = adapter;
         this.spine = new TopicSpine();
-        this.router = new CommentRouter();
         this.emotionEngine = new EmotionEngine();
-        this.intentClassifier = new IntentClassifier();
         this.llm = llmService;
+        this.classifier = classifierService;
         this.promptManager = promptManager;
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
@@ -158,10 +162,14 @@ export class Agent {
                 });
                 this.currentStreamId = stream.id;
                 logger.info(`[Agent] Stream session created: ${stream.id}`);
+                this.memoryService.clearShortTermMemory();
             } catch (error) {
                 this.logError('memory.init', '[Agent] Memory initialization failed', error);
             }
         }
+
+        this.startCommentWorker();
+        this.startSpeechWorker();
 
         while (this.isRunning) {
             try {
@@ -219,125 +227,207 @@ export class Agent {
             newMessages = [];
         }
 
-        // 2. コメント処理
         for (const msg of newMessages) {
-            this.emitEvent('comment', { message: msg, receivedAt: Date.now() });
+            this.enqueueComment(msg);
+        }
+    }
 
-            const intent = this.intentClassifier.classify(msg.content);
-            const isShort = this.isShortComment(msg.content);
+    private enqueueComment(msg: ChatMessage) {
+        if (this.commentQueue.length >= this.commentQueueMaxSize) {
+            logger.warn(`[Agent] Comment queue full (${this.commentQueue.length}/${this.commentQueueMaxSize}). Dropping comment from ${msg.authorName}.`);
+            return;
+        }
+        this.commentQueue.push(msg);
+    }
 
-            if (intent === IntentType.SPAM || (isShort && !this.hasExclamation(msg.content))) {
-                await this.storeMessage(msg, CommentType.IGNORE);
-                logger.info(`[Agent] Skipping comment (intent=${intent}, length=${msg.content.trim().length}).`);
+    private startCommentWorker() {
+        if (this.commentWorkerRunning) return;
+        void this.runCommentWorker();
+    }
+
+    private async runCommentWorker() {
+        if (this.commentWorkerRunning) return;
+        this.commentWorkerRunning = true;
+        logger.info('[Agent] Comment worker started.');
+
+        while (this.isRunning) {
+            const msg = this.commentQueue.shift();
+            if (!msg) {
+                await this.handleIdleState();
+                await this.sleep(this.tickIntervalMs);
                 continue;
             }
 
-            if (this.stageService) {
-                const handled = await this.stageService.handleCommand(msg.content);
-                if (handled) {
-                    await this.storeMessage(msg, CommentType.IGNORE);
-                    continue;
-                }
-            }
-
-            if (this.storytellingService) {
-                const commandResult = this.storytellingService.handleCommand(msg.content);
-                if (commandResult.handled) {
-                    await this.storeMessage(msg, CommentType.IGNORE);
-                    if (commandResult.theme) {
-                        this.syncStoryTheme(commandResult.theme);
-                        this.narrativeContext = this.storytellingService.getNarrativeContext();
-                    }
-                    if (commandResult.acknowledgment) {
-                        this.enqueueSpeech(commandResult.acknowledgment, 'HIGH', msg.id, this.currentVoiceOptions);
-                    }
-                    continue;
-                }
-            }
-
-            const history = this.recentComments.map(item => item.content);
-            const previousEmotion = this.currentEmotion;
-            const emotionUpdate = this.emotionEngine.update(msg.content, history);
-            this.applyEmotionUpdate(emotionUpdate, previousEmotion);
-            this.pushRecentComment(msg);
-
-            let type: CommentType = CommentType.IGNORE;
             try {
-                type = await this.router.classify(msg, this.spine.currentState);
+                await this.processComment(msg);
             } catch (error) {
-                this.logError('router.classify', '[Agent] classify failed', error);
+                this.logError('comment.process', '[Agent] Comment processing failed', error);
+            }
+
+            await this.sleep(this.commentProcessingIntervalMs);
+        }
+
+        this.commentWorkerRunning = false;
+        logger.info('[Agent] Comment worker stopped.');
+    }
+
+    private async handleIdleState() {
+        if (this.speechQueue.length > 0) {
+            return;
+        }
+
+        if (this.pendingComments.length > 0) {
+            await this.processPendingComment();
+            return;
+        }
+
+        await this.maybeGenerateMonologue();
+    }
+
+    private startSpeechWorker() {
+        if (this.speechWorkerRunning) return;
+        void this.runSpeechWorker();
+    }
+
+    private async runSpeechWorker() {
+        if (this.speechWorkerRunning) return;
+        this.speechWorkerRunning = true;
+        logger.info('[Agent] Speech worker started.');
+
+        while (this.isRunning) {
+            if (this.speechQueue.length === 0) {
+                await this.sleep(this.tickIntervalMs);
                 continue;
             }
+            await this.processQueue();
+        }
 
-            // Store message in database
-            await this.storeMessage(msg, type);
+        this.speechWorkerRunning = false;
+        logger.info('[Agent] Speech worker stopped.');
+    }
 
-            let storyUpdate: StorytellingUpdate | undefined;
-            if (this.storytellingService) {
-                storyUpdate = await this.storytellingService.observeComment(msg, {
-                    type,
-                    recentComments: this.recentComments
-                });
-                this.narrativeContext = storyUpdate.narrative;
-                if (storyUpdate.themeChanged) {
-                    this.syncStoryTheme(storyUpdate.narrative.theme, storyUpdate.themeLockedUntil);
-                }
-                if (storyUpdate.emotionLock) {
-                    const previous = this.currentEmotion;
-                    const lockUpdate = this.emotionEngine.lockState(
-                        storyUpdate.emotionLock.state,
-                        storyUpdate.emotionLock.durationMs
-                    );
-                    this.applyEmotionUpdate(lockUpdate, previous);
-                }
-            }
+    private async processComment(msg: ChatMessage) {
+        this.emitEvent('comment', { message: msg, receivedAt: Date.now() });
 
-            let responseText = '';
-            let priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL';
+        const trimmed = msg.content.trim();
+        if (!trimmed) {
+            await this.storeMessage(msg, CommentType.IGNORE);
+            return;
+        }
 
-            if (storyUpdate?.summary) {
-                responseText = storyUpdate.summary;
-                priority = 'HIGH';
-            } else {
-                switch (type) {
-                    case CommentType.ON_TOPIC:
-                        responseText = await this.generateReply(msg, type);
-                        priority = 'HIGH';
-                        break;
-                    case CommentType.REACTION:
-                        responseText = `（リアクションありがとうございます！）`;
-                        priority = 'HIGH';
-                        break;
-                    case CommentType.OFF_TOPIC:
-                        this.pendingComments.push(msg);
-                        break;
-                    case CommentType.CHANGE_REQ:
-                        responseText = `（話題変更のリクエストを受け付けました）`;
-                        priority = 'HIGH';
-                        break;
-                }
-            }
-
-            if (intent === IntentType.QUESTION) {
-                priority = 'HIGH';
-            }
-
-            if (responseText) {
-                this.enqueueSpeech(responseText, priority, msg.id, this.currentVoiceOptions);
+        if (this.stageService) {
+            const handled = await this.stageService.handleCommand(msg.content);
+            if (handled) {
+                await this.storeMessage(msg, CommentType.IGNORE);
+                return;
             }
         }
 
-        // 3. 自発発話 (Queueが空で、コメントもなかった場合など -> 今回はQueue空なら発話)
-        if (this.speechQueue.length === 0 && newMessages.length === 0) {
-            if (this.pendingComments.length > 0) {
-                await this.processPendingComment();
-            } else {
-                await this.maybeGenerateMonologue();
+        if (this.storytellingService) {
+            const commandResult = this.storytellingService.handleCommand(msg.content);
+            if (commandResult.handled) {
+                await this.storeMessage(msg, CommentType.IGNORE);
+                if (commandResult.theme) {
+                    this.syncStoryTheme(commandResult.theme);
+                    this.narrativeContext = this.storytellingService.getNarrativeContext();
+                }
+                if (commandResult.acknowledgment) {
+                    this.enqueueSpeech(commandResult.acknowledgment, 'HIGH', msg.id, this.currentVoiceOptions);
+                }
+                return;
             }
         }
 
-        // 4. 出力処理 (Queueから取り出して実行)
-        await this.processQueue();
+        let classification: ClassificationResult;
+        try {
+            classification = await this.classifier.classify(msg.content, {
+                currentTopic: this.spine.currentState.title,
+                narrative: this.narrativeContext
+            });
+        } catch (error) {
+            this.logError('classifier', '[Agent] LLM classification failed', error);
+            classification = {
+                intent: ['other'],
+                emotion: { positive: 0, negative: 0, neutral: 1 },
+                topic: '',
+                commentType: CommentType.OFF_TOPIC
+            };
+        }
+
+        const intent = classification.intent.map(item => item.toLowerCase());
+        const isShort = this.isShortComment(msg.content);
+        const isSpam = intent.includes('spam') || classification.commentType === CommentType.IGNORE;
+
+        if (isSpam || (isShort && classification.commentType === CommentType.OFF_TOPIC && !this.hasExclamation(msg.content))) {
+            await this.storeMessage(msg, CommentType.IGNORE);
+            logger.info(`[Agent] Skipping comment (intent=${intent.join(',')}, length=${msg.content.trim().length}).`);
+            return;
+        }
+
+        const history = this.getRecentComments().map(item => item.content);
+        const previousEmotion = this.currentEmotion;
+        const emotionUpdate = this.emotionEngine.update(msg.content, history, classification.emotion);
+        this.applyEmotionUpdate(emotionUpdate, previousEmotion);
+        this.pushRecentComment(msg);
+
+        const type: CommentType = classification.commentType;
+
+        // Store message in database
+        await this.storeMessage(msg, type);
+
+        let storyUpdate: StorytellingUpdate | undefined;
+        if (this.storytellingService) {
+            storyUpdate = await this.storytellingService.observeComment(msg, {
+                type,
+                recentComments: this.getRecentComments()
+            });
+            this.narrativeContext = storyUpdate.narrative;
+            if (storyUpdate.themeChanged) {
+                this.syncStoryTheme(storyUpdate.narrative.theme, storyUpdate.themeLockedUntil);
+            }
+            if (storyUpdate.emotionLock) {
+                const previous = this.currentEmotion;
+                const lockUpdate = this.emotionEngine.lockState(
+                    storyUpdate.emotionLock.state,
+                    storyUpdate.emotionLock.durationMs
+                );
+                this.applyEmotionUpdate(lockUpdate, previous);
+            }
+        }
+
+        let responseText = '';
+        let priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL';
+
+        if (storyUpdate?.summary) {
+            responseText = storyUpdate.summary;
+            priority = 'HIGH';
+        } else {
+            switch (type) {
+                case CommentType.ON_TOPIC:
+                    responseText = await this.generateReply(msg, type);
+                    priority = 'HIGH';
+                    break;
+                case CommentType.REACTION:
+                    responseText = `（リアクションありがとうございます！）`;
+                    priority = 'HIGH';
+                    break;
+                case CommentType.OFF_TOPIC:
+                    this.pendingComments.push(msg);
+                    break;
+                case CommentType.CHANGE_REQ:
+                    responseText = `（話題変更のリクエストを受け付けました）`;
+                    priority = 'HIGH';
+                    break;
+            }
+        }
+
+        if (intent.includes('question')) {
+            priority = 'HIGH';
+        }
+
+        if (responseText) {
+            this.enqueueSpeech(responseText, priority, msg.id, this.currentVoiceOptions);
+        }
     }
 
     private enqueueSpeech(text: string, priority: 'HIGH' | 'NORMAL' | 'LOW', sourceCommentId?: string, ttsOptions?: TTSOptions) {
@@ -514,8 +604,14 @@ export class Agent {
                         { type: MemoryType.CONVERSATION_SUMMARY }
                     );
 
+                    const eventMemories = await this.memoryService.searchMemory(
+                        msg.content,
+                        2,
+                        { type: MemoryType.EVENT }
+                    );
+
                     // Combine and deduplicate memories
-                    const allMemories = [...viewerMemories, ...conversationMemories];
+                    const allMemories = [...viewerMemories, ...conversationMemories, ...eventMemories];
                     const uniqueMemories = allMemories.filter((m, i, arr) =>
                         arr.findIndex(m2 => m2.id === m.id) === i
                     );
@@ -595,10 +691,21 @@ export class Agent {
     }
 
     private pushRecentComment(msg: ChatMessage) {
+        if (this.memoryService) {
+            this.memoryService.addShortTermMessage(msg);
+        }
+
         this.recentComments.push(msg);
         if (this.recentComments.length > this.recentCommentLimit) {
             this.recentComments.splice(0, this.recentComments.length - this.recentCommentLimit);
         }
+    }
+
+    private getRecentComments(): ChatMessage[] {
+        if (this.memoryService) {
+            return this.memoryService.getShortTermMessages(this.recentCommentLimit);
+        }
+        return this.recentComments;
     }
 
     private syncStoryTheme(theme: string, lockUntil?: number) {
@@ -740,18 +847,11 @@ export class Agent {
             });
 
             // Store important messages as memories
-            // Store important messages as memories
-            // Modified to include OFF_TOPIC for "Accumulate Everything" strategy
-            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ || type === CommentType.OFF_TOPIC) {
-                let importance = config.memory.defaultImportance;
-
-                if (type === CommentType.CHANGE_REQ) {
-                    importance = config.agent.memory.changeReqImportance;
-                } else if (type === CommentType.ON_TOPIC) {
-                    importance = config.agent.memory.onTopicImportance;
-                }
-
-                await this.memoryService.addMemory({
+            if (type === CommentType.ON_TOPIC || type === CommentType.CHANGE_REQ) {
+                const importance = type === CommentType.CHANGE_REQ
+                    ? config.agent.memory.changeReqImportance
+                    : config.agent.memory.onTopicImportance;
+                await this.memoryService.addMidTermMemory({
                     content: `${msg.authorName}さんのコメント: "${msg.content}"`,
                     type: MemoryType.CONVERSATION_SUMMARY,
                     importance,
@@ -796,25 +896,27 @@ export class Agent {
         try {
             logger.info('[Agent] Consolidating stream memory...');
 
-            // Get stream data
             const stream = await prisma.stream.findUnique({
-                where: { id: this.currentStreamId },
-                include: {
-                    messages: {
-                        orderBy: { createdAt: 'asc' },
-                        take: config.agent.memory.consolidationMessageLimit, // Limit to avoid token overflow
-                    },
-                },
+                where: { id: this.currentStreamId }
             });
 
-            if (!stream || !stream.messages.length) {
-                logger.info('[Agent] No messages to consolidate');
+            if (!stream) {
+                logger.info('[Agent] No stream found for consolidation');
                 return;
             }
 
-            // Build consolidation prompt
-            const messagesSummary = stream.messages
-                .map((m: any) => `- ${m.authorName}: ${m.content}`)
+            const midTermMemories = await this.memoryService.getMidTermMemories(
+                this.currentStreamId,
+                config.agent.memory.consolidationMessageLimit
+            );
+
+            if (!midTermMemories.length) {
+                logger.info('[Agent] No mid-term memories to consolidate');
+                return;
+            }
+
+            const messagesSummary = midTermMemories
+                .map((m: any) => `- ${m.content}`)
                 .join('\n');
 
             const consolidationPrompt = {
@@ -822,7 +924,7 @@ export class Agent {
 
 配信タイトル: ${stream.title}
 配信時間: ${stream.startedAt.toLocaleString('ja-JP')} 〜 ${new Date().toLocaleString('ja-JP')}
-コメント数: ${stream.messages.length}
+重要コメント数: ${midTermMemories.length}
 
 主なコメント:
 ${messagesSummary}
@@ -840,14 +942,14 @@ ${messagesSummary}
             const summary = await this.llm.generateText(consolidationPrompt);
 
             // Save as EVENT memory
-            await this.memoryService.addMemory({
+            await this.memoryService.addLongTermMemory({
                 content: summary.trim(),
                 type: MemoryType.EVENT,
                 importance: 7,
                 streamId: this.currentStreamId,
                 summary: `配信「${stream.title}」のまとめ`,
                 metadata: {
-                    messageCount: stream.messages.length,
+                    midTermCount: midTermMemories.length,
                     duration: Date.now() - stream.startedAt.getTime(),
                 },
             });
