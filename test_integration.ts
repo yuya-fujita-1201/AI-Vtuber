@@ -83,14 +83,9 @@ async function runIntegrationTest() {
         const mockAdapter = new MockChatAdapter(testMessages);
         await mockAdapter.connect();
 
-        agent = new Agent(
-            mockAdapter,
-            undefined, // Use default OpenAIService
-            undefined, // Use default PromptManager
-            undefined, // Use default VoicevoxService
-            undefined, // Use default AudioPlayer
-            memoryService // Pass memory service
-        );
+        agent = new Agent(mockAdapter, {
+            memoryService
+        });
         console.log('✅ Agent created with MemoryService\n');
 
         // Test 4: Start Agent (but stop after processing messages)

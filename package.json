@@ -6,7 +6,10 @@
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "health-check": "ts-node scripts/health-check.ts"
+    "health-check": "ts-node scripts/health-check.ts",
+    "sprint1-test": "ts-node scripts/sprint1_test.ts",
+    "prune-memories": "ts-node scripts/prune_memories.ts",
+    "memory-freshness-test": "ts-node scripts/memory_freshness_test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0",

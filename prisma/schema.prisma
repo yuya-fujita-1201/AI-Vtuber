@@ -143,6 +143,14 @@ model Memory {
   vectorId    String?  @unique // ChromaDB document ID
   lastSyncedAt DateTime?
 
+  // Access tracking for freshness scoring
+  accessCount   Int      @default(0)
+  lastAccessedAt DateTime?
+
+  // Archival status for pruning
+  isArchived Boolean @default(false)
+  archivedAt DateTime?
+
   // Metadata (JSON for flexible data)
   metadata    String?  // JSON string for additional context
 
@@ -152,6 +160,41 @@ model Memory {
   @@index([streamId])
   @@index([viewerId])
   @@index([vectorId])
+  @@index([isArchived])
+  @@index([lastAccessedAt])
+}
+
+/// Dynamic character traits for prompt injection
+model CharacterTrait {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category  String   // e.g., base_personality, speech_style, favorite_topic
+  value     String
+  isActive  Boolean  @default(true)
+  priority  Int      @default(0)
+
+  @@index([category])
+  @@index([isActive])
+}
+
+/// Topic-level conversational history
+model TopicHistory {
+  id              String   @id @default(cuid())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  topicName       String
+  normalizedName  String   @unique
+  totalMentions   Int      @default(1)
+  firstDiscussedAt DateTime @default(now())
+  lastDiscussedAt DateTime @default(now())
+  lastViewerId    String?
+  lastSentiment   String?
+
+  @@index([topicName])
+  @@index([lastDiscussedAt])
 }
 
 // ========================================

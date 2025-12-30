@@ -1,11 +1,26 @@
 import { ChatMessage, CommentType, TopicState } from '../interfaces';
+import { LLMClassifierService } from '../services/LLMClassifierService';
+import { config } from '../config/AppConfig';
 
 export class CommentRouter {
+    private llmClassifier?: LLMClassifierService;
+
+    constructor(llmClassifier?: LLMClassifierService) {
+        this.llmClassifier = llmClassifier;
+    }
+
     /**
      * コメントを分類する
      * MVP: 簡易ルールベース
      */
     public async classify(comment: ChatMessage, currentTopic: TopicState): Promise<CommentType> {
+        if (config.agent.classifier.useLLM && this.llmClassifier) {
+            const llmResult = await this.llmClassifier.classifyCommentType(comment, currentTopic);
+            if (llmResult) {
+                return llmResult;
+            }
+        }
+
         const content = comment.content;
 
         // 1. 質問 (Question)
