@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { ChatMessage, ConversationVibe, LLMRequest, NarrativeContext, NarrativePhase, TopicState } from '../interfaces';
 import { SearchMemoryResult } from '../services/MemoryService';
-import { getSystemPrompt, AGENT_NAME } from '../prompts/system_prompt';
+import { getSystemPrompt } from '../prompts/system_prompt';
+import type { CharacterProfile } from '../types/CharacterProfile';
+import type { TopicHistorySummary } from '../services/TopicService';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
 
@@ -31,12 +33,17 @@ export class PromptManager {
         this.replyTemplate = this.loadTemplate('prompts/reply.md', DEFAULT_REPLY_PROMPT);
     }
 
-    public buildMonologuePrompt(topic: TopicState, narrative?: NarrativeContext): LLMRequest {
+    public buildMonologuePrompt(
+        topic: TopicState,
+        narrative?: NarrativeContext,
+        characterProfile?: CharacterProfile,
+        topicHistory?: TopicHistorySummary | null
+    ): LLMRequest {
         const replacements = this.buildTopicReplacements(topic);
         const baseTemplate = this.renderTemplate(this.monologueTemplate, replacements);
 
         // Build structured system prompt
-        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, topic, [], undefined, narrative);
+        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, topic, [], undefined, narrative, characterProfile, topicHistory);
 
         return {
             systemPrompt,
@@ -54,7 +61,9 @@ export class PromptManager {
         comment: ChatMessage,
         context: TopicState,
         memories: SearchMemoryResult[] = [],
-        narrative?: NarrativeContext
+        narrative?: NarrativeContext,
+        characterProfile?: CharacterProfile,
+        topicHistory?: TopicHistorySummary | null
     ): LLMRequest {
         const replacements = {
             ...this.buildTopicReplacements(context),
@@ -65,7 +74,7 @@ export class PromptManager {
         const baseTemplate = this.renderTemplate(this.replyTemplate, replacements);
 
         // Build structured system prompt with memories
-        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, context, memories, comment, narrative);
+        const systemPrompt = this.buildStructuredSystemPrompt(baseTemplate, context, memories, comment, narrative, characterProfile, topicHistory);
 
         return {
             systemPrompt,
@@ -125,13 +134,15 @@ export class PromptManager {
         context: TopicState,
         memories: SearchMemoryResult[] = [],
         comment?: ChatMessage,
-        narrative?: NarrativeContext
+        narrative?: NarrativeContext,
+        characterProfile?: CharacterProfile,
+        topicHistory?: TopicHistorySummary | null
     ): string {
         const sections: string[] = [];
 
         // 1. SYSTEM: Core personality and rules
         sections.push('# システム設定 (SYSTEM)');
-        sections.push(getSystemPrompt());
+        sections.push(getSystemPrompt(characterProfile));
         sections.push('');
 
         // 2. CONTEXT: Current stream topic and state
@@ -152,6 +163,11 @@ export class PromptManager {
                 sections.push(`- 残り: ${remaining.join(', ')}`);
             }
         }
+        sections.push('');
+
+        // 2.2 Topic history context
+        sections.push('# 話題履歴 (TOPIC HISTORY)');
+        sections.push(this.formatTopicHistory(topicHistory));
         sections.push('');
 
         // 2.5 Narrative context: current conversation theme to prevent drifting
@@ -192,7 +208,7 @@ export class PromptManager {
         return sections.join('\n');
     }
 
-    public buildNarrativePrompt(input: NarrativePromptInput): LLMRequest {
+    public buildNarrativePrompt(input: NarrativePromptInput, characterProfile?: CharacterProfile): LLMRequest {
         const recentLines = (input.recentComments ?? [])
             .slice(-config.prompts.narrative.recentCommentLimit)
             .map(comment => `- ${comment.authorName}: ${comment.content}`)
@@ -204,7 +220,7 @@ export class PromptManager {
 
         const systemPrompt = [
             '# システム設定 (SYSTEM)',
-            getSystemPrompt(),
+            getSystemPrompt(characterProfile),
             '',
             '# ストーリー監督 (DIRECTOR)',
             `テーマ: ${input.theme}`,
@@ -255,5 +271,28 @@ export class PromptManager {
         lines.push('**注意**: これらの記憶は参考情報です。会話の流れに自然に組み込める場合のみ使用してください。不確かな場合は無理に使わないでください。');
 
         return lines.join('\n');
+    }
+
+    private formatTopicHistory(history?: TopicHistorySummary | null): string {
+        if (!history) {
+            return 'この話題は今回が初めて。新鮮なリアクションを意識する。';
+        }
+
+        const totalMentions = history.totalMentions ?? 0;
+        if (totalMentions <= 1) {
+            return `この話題「${history.topicName}」は初登場。初回らしいリアクションで返す。`;
+        }
+
+        const lastDiscussedAt = history.lastDiscussedAt;
+        const diffMs = Date.now() - lastDiscussedAt.getTime();
+        const daysAgo = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+        const relative = daysAgo === 0 ? '今日' : daysAgo === 1 ? '昨日' : `${daysAgo}日前`;
+        const sentiment = history.lastSentiment ?? '（未記録）';
+
+        return [
+            `この話題「${history.topicName}」は過去に${totalMentions}回話題になった。`,
+            `最後に話したのは${relative}（${lastDiscussedAt.toLocaleDateString('ja-JP')}）。`,
+            `前回の雰囲気: ${sentiment}`
+        ].join('\n');
     }
 }
