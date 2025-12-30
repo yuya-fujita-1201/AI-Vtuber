@@ -26,6 +26,10 @@ export type AppConfig = {
   agent: {
     tickIntervalMs: number;
     recentCommentLimit: number;
+    commentQueue: {
+      maxSize: number;
+      processingIntervalMs: number;
+    };
     monologue: {
       intervalMs: number;
       varianceMs: number;
@@ -206,9 +210,16 @@ export type AppConfig = {
     searchLimit: number;
     streamMemoriesLimit: number;
     viewerMemoriesLimit: number;
+    shortTermLimit: number;
   };
   llm: {
     provider: 'openai' | 'groq' | 'grok';
+    requestTimeoutMs: number;
+    retry: {
+      maxAttempts: number;
+      baseDelayMs: number;
+      maxDelayMs: number;
+    };
   };
   openai: {
     apiKey: string;
@@ -294,6 +305,10 @@ export const config: AppConfig = {
   agent: {
     tickIntervalMs: parseNumber(process.env.AGENT_TICK_INTERVAL_MS, 1000),
     recentCommentLimit: parseNumber(process.env.AGENT_RECENT_COMMENT_LIMIT, 20),
+    commentQueue: {
+      maxSize: parseNumber(process.env.AGENT_COMMENT_QUEUE_MAX_SIZE, 200),
+      processingIntervalMs: parseNumber(process.env.AGENT_COMMENT_PROCESSING_INTERVAL_MS, 2500)
+    },
     monologue: {
       intervalMs: parseNumber(process.env.AGENT_MONOLOGUE_INTERVAL_MS, 10_000),
       varianceMs: parseNumber(process.env.AGENT_MONOLOGUE_VARIANCE_MS, 3_000),
@@ -479,10 +494,17 @@ export const config: AppConfig = {
     defaultImportance: parseNumber(process.env.MEMORY_DEFAULT_IMPORTANCE, 5),
     searchLimit: parseNumber(process.env.MEMORY_SEARCH_LIMIT, 5),
     streamMemoriesLimit: parseNumber(process.env.MEMORY_STREAM_LIMIT, 10),
-    viewerMemoriesLimit: parseNumber(process.env.MEMORY_VIEWER_LIMIT, 10)
+    viewerMemoriesLimit: parseNumber(process.env.MEMORY_VIEWER_LIMIT, 10),
+    shortTermLimit: parseNumber(process.env.MEMORY_STM_LIMIT, 25)
   },
   llm: {
-    provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok')
+    provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok'),
+    requestTimeoutMs: parseNumber(process.env.LLM_REQUEST_TIMEOUT_MS, 15_000),
+    retry: {
+      maxAttempts: parseNumber(process.env.LLM_RETRY_MAX_ATTEMPTS, 3),
+      baseDelayMs: parseNumber(process.env.LLM_RETRY_BASE_DELAY_MS, 500),
+      maxDelayMs: parseNumber(process.env.LLM_RETRY_MAX_DELAY_MS, 4_000)
+    }
   },
   openai: {
     apiKey: parseString(process.env.OPENAI_API_KEY, ''),

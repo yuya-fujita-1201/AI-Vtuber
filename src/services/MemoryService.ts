@@ -16,6 +16,7 @@ import OpenAI from 'openai';
 import { prisma } from '../lib/prisma';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
+import { ChatMessage } from '../interfaces';
 
 export interface AddMemoryOptions {
   content: string;
@@ -52,6 +53,8 @@ export class MemoryService {
   private collection: Collection | null = null;
   private openai: OpenAI;
   private isInitialized: boolean = false;
+  private shortTermMessages: ChatMessage[] = [];
+  private readonly shortTermLimit = config.memory.shortTermLimit;
 
   // Configuration
   private readonly collectionName = config.memory.collectionName;
@@ -111,9 +114,68 @@ export class MemoryService {
   }
 
   /**
-   * Add a new memory to both Prisma and ChromaDB
+   * Short-Term Memory (STM)
+   * Keeps a rolling in-memory window of recent chat messages.
    */
-  async addMemory(options: AddMemoryOptions): Promise<string> {
+  addShortTermMessage(message: ChatMessage): void {
+    this.shortTermMessages.push(message);
+    if (this.shortTermMessages.length > this.shortTermLimit) {
+      this.shortTermMessages.splice(0, this.shortTermMessages.length - this.shortTermLimit);
+    }
+  }
+
+  getShortTermMessages(limit: number = this.shortTermLimit): ChatMessage[] {
+    if (limit <= 0) return [];
+    return this.shortTermMessages.slice(-limit);
+  }
+
+  clearShortTermMemory(): void {
+    this.shortTermMessages = [];
+  }
+
+  /**
+   * Mid-Term Memory (MTM) - stored in Prisma only (no vector sync).
+   */
+  async addMidTermMemory(options: AddMemoryOptions): Promise<string> {
+    const {
+      content,
+      type,
+      importance = config.memory.defaultImportance,
+      streamId,
+      topicId,
+      viewerId,
+      summary,
+      metadata = {}
+    } = options;
+
+    try {
+      const mtmMetadata = { ...metadata, tier: 'MTM' };
+
+      const memory = await prisma.memory.create({
+        data: {
+          content,
+          summary,
+          type,
+          importance,
+          streamId,
+          topicId,
+          viewerId,
+          metadata: mtmMetadata ? JSON.stringify(mtmMetadata) : undefined
+        }
+      });
+
+      logger.info(`[MemoryService] MTM stored: ${memory.id}`);
+      return memory.id;
+    } catch (error) {
+      logger.error('[MemoryService] Failed to add MTM memory:', error);
+      throw new Error(`Failed to add MTM memory: ${error}`);
+    }
+  }
+
+  /**
+   * Long-Term Memory (LTM) - stored in Prisma and synced to ChromaDB.
+   */
+  async addLongTermMemory(options: AddMemoryOptions): Promise<string> {
     if (!this.isInitialized || !this.collection) {
       throw new Error('MemoryService not initialized. Call initialize() first.');
     }
@@ -131,10 +193,11 @@ export class MemoryService {
 
     try {
       // 1. Generate embedding using OpenAI
-      logger.info(`[MemoryService] Generating embedding for memory...`);
+      logger.info('[MemoryService] Generating embedding for memory...');
       const embedding = await this.generateEmbedding(content);
 
       // 2. Create memory in Prisma (SQLite)
+      const ltmMetadata = { ...metadata, tier: 'LTM' };
       const memory = await prisma.memory.create({
         data: {
           content,
@@ -144,7 +207,7 @@ export class MemoryService {
           streamId,
           topicId,
           viewerId,
-          metadata: metadata ? JSON.stringify(metadata) : undefined,
+          metadata: ltmMetadata ? JSON.stringify(ltmMetadata) : undefined,
           lastSyncedAt: new Date(),
         },
       });
@@ -159,6 +222,7 @@ export class MemoryService {
         importance,
         createdAt: memory.createdAt.toISOString(),
         ...metadata,
+        tier: 'LTM'
       };
 
       if (streamId) chromaMetadata.streamId = streamId;
@@ -178,12 +242,19 @@ export class MemoryService {
         data: { vectorId },
       });
 
-      logger.info(`[MemoryService] Memory added successfully: ${memory.id}`);
+      logger.info(`[MemoryService] LTM added successfully: ${memory.id}`);
       return memory.id;
     } catch (error) {
-      logger.error('[MemoryService] Failed to add memory:', error);
-      throw new Error(`Failed to add memory: ${error}`);
+      logger.error('[MemoryService] Failed to add LTM memory:', error);
+      throw new Error(`Failed to add LTM memory: ${error}`);
     }
+  }
+
+  /**
+   * Backwards-compatible alias (LTM)
+   */
+  async addMemory(options: AddMemoryOptions): Promise<string> {
+    return this.addLongTermMemory(options);
   }
 
   /**
@@ -322,6 +393,24 @@ export class MemoryService {
   }
 
   /**
+   * Get mid-term memories for a stream (not yet synced to ChromaDB)
+   */
+  async getMidTermMemories(streamId: string, limit: number = config.memory.streamMemoriesLimit) {
+    return await prisma.memory.findMany({
+      where: {
+        streamId,
+        vectorId: null
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      include: {
+        viewer: true,
+        topic: true
+      }
+    });
+  }
+
+  /**
    * Get memories about a specific viewer
    */
   async getViewerMemories(viewerId: string, limit: number = config.memory.viewerMemoriesLimit) {
@@ -359,11 +448,15 @@ export class MemoryService {
 
     const count = await this.collection.count();
     const prismaCount = await prisma.memory.count();
+    const prismaLtmCount = await prisma.memory.count({
+      where: { vectorId: { not: null } }
+    });
 
     return {
       chromaCount: count,
       prismaCount,
-      isInSync: count === prismaCount,
+      prismaLtmCount,
+      isInSync: count === prismaLtmCount,
     };
   }
 
@@ -375,5 +468,6 @@ export class MemoryService {
     await prisma.$disconnect();
     this.isInitialized = false;
     this.collection = null;
+    this.clearShortTermMemory();
   }
 }

@@ -1,4 +1,5 @@
 import { config } from '../config/AppConfig';
+import { EmotionScores } from '../interfaces';
 
 export enum EmotionState {
     NEUTRAL = 'NEUTRAL',
@@ -37,7 +38,7 @@ export class EmotionEngine {
     private readonly voiceMap: Record<EmotionState, VoiceSettings> =
         config.emotion.voiceMap as Record<EmotionState, VoiceSettings>;
 
-    public update(comment: string, history: string[] = []): EmotionUpdate {
+    public update(comment: string, history: string[] = [], emotionHint?: EmotionScores): EmotionUpdate {
         const now = Date.now();
         if (this.overrideState && this.overrideUntil && now < this.overrideUntil) {
             const changed = this.state !== this.overrideState;
@@ -55,7 +56,7 @@ export class EmotionEngine {
             this.overrideUntil = undefined;
         }
 
-        const signals = this.analyzeSignals(comment, history);
+        const signals = this.analyzeSignals(comment, history, emotionHint);
 
         const blendedScore = signals.score + this.scoreHistory(history) * config.emotion.historyWeight;
         this.moodScore = this.clamp(
@@ -138,7 +139,7 @@ export class EmotionEngine {
         return EmotionState.NEUTRAL;
     }
 
-    private analyzeSignals(comment: string, history: string[]): EmotionSignals {
+    private analyzeSignals(comment: string, history: string[], emotionHint?: EmotionScores): EmotionSignals {
         const text = this.normalizeText([
             history.slice(-config.emotion.historyContextWindow).join(' '),
             comment
@@ -201,15 +202,31 @@ export class EmotionEngine {
         const laughCount = (text.match(/[wｗ]{3,}/g) || []).length;
         const cheerCount = text.includes('888') ? 1 : 0;
 
-        const score = this.clamp(
+        const baseScore = this.clamp(
             positiveHits - negativeHits - angerHits,
             config.emotion.moodClamp.min,
             config.emotion.moodClamp.max
         );
-        const excitement = Math.min(config.emotion.signalClampMax, exclamationCount + laughCount + cheerCount);
-        const anger = Math.min(config.emotion.signalClampMax, angerHits);
+        const baseExcitement = Math.min(config.emotion.signalClampMax, exclamationCount + laughCount + cheerCount);
+        const baseAnger = Math.min(config.emotion.signalClampMax, angerHits);
 
-        return { score, excitement, anger };
+        if (!emotionHint) {
+            return { score: baseScore, excitement: baseExcitement, anger: baseAnger };
+        }
+
+        const hintScore = this.clamp(
+            emotionHint.positive - emotionHint.negative,
+            config.emotion.moodClamp.min,
+            config.emotion.moodClamp.max
+        );
+        const hintExcitement = Math.min(config.emotion.signalClampMax, Math.round((1 - emotionHint.neutral) * 2));
+        const hintAnger = Math.min(config.emotion.signalClampMax, Math.round(emotionHint.negative * 2));
+
+        return {
+            score: this.clamp(baseScore + hintScore, config.emotion.moodClamp.min, config.emotion.moodClamp.max),
+            excitement: Math.min(config.emotion.signalClampMax, baseExcitement + hintExcitement),
+            anger: Math.min(config.emotion.signalClampMax, baseAnger + hintAnger)
+        };
     }
 
     private scoreHistory(history: string[]): number {
