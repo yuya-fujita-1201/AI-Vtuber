@@ -166,7 +166,7 @@ export class LLMClassifierService {
       }
 
       const normalizedIntent = Array.from(new Set(
-        (result.data.intent ?? []).map((intent) => intent.trim().toLowerCase()).filter(Boolean)
+        (result.data.intent ?? []).map((intent: string) => intent.trim().toLowerCase()).filter(Boolean)
       ));
 
       const normalizedEmotion = normalizeEmotion(result.data.emotion);
