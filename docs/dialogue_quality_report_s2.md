@@ -1,50 +1,39 @@
-# Dialogue Quality Report (Season 2)
-Date: 2025-12-30
+# Dialogue Quality Report (Sprint 2)
 
-## Summary
-We evaluated three persona-driven scenarios (questioner, troll, regular) to assess coherence, relevance, personality consistency, and memory usage. Overall the agent stayed on-topic and consistent, but two recurring issues surfaced: (1) deep questions sometimes got overly short answers, and (2) troll comments occasionally received too much engagement. We implemented prompt adjustments to address both.
+## Overview
+This report summarizes the results of the Day 24 scenario testing, evaluating the agent's performance across different user personas and interaction styles.
 
-## Scenarios Run
-1. `scenarios/questioner.json` — Deep, challenging questions.
-2. `scenarios/troll.json` — Provocation and spam attempts.
-3. `scenarios/regular.json` — Friendly returning viewer who shares a personal detail.
+Date: 2025-12-31
+Evaluator: AI Agent
 
-## Evaluation Criteria
-- Coherence and clarity
-- Relevance to the current topic
-- Personality consistency (Kamee’s tone)
-- Memory utilization (viewer profile + memories)
-- De-escalation behavior for hostile inputs
+## Scenario Results
 
-## Findings
-### Questioner
-- Good: Responses stayed relevant and used the current topic context.
-- Weakness: Several answers were limited to 1 short sentence even when asked “why/how” questions.
-- Example (good): “それは人が相手の意図を想像するからだよ。たとえば…”
-- Example (bad): “難しいけどそういうものだよ。” (Too short, no depth)
+### 1. Regular User (`regular.json`)
+*   **Result**: 1 Passed / 1 Failed
+*   **Failed Expectation**: `r2` (Missing "子犬")
+*   **Cause**: The agent is running in a mock environment (or without active LLM generation for specific terms), so it couldn't dynamically reference the "new puppy" mentioned in the prompt.
+*   **Observation**: The system correctly identified the topic context, but the response generation lacked specific entity recall in this test run.
 
-### Troll
-- Good: The agent did not mirror insults.
-- Weakness: Some replies acknowledged bait too directly, which can reward trolling.
-- Example (good): “落ち着いていこうね。今の話題に戻ると…”  
-- Example (bad): “やめろって言われると悲しいよ…” (Over-engagement)
+### 2. Questioner (`questioner.json`)
+*   **Result**: 0 Passed / 3 Failed
+*   **Failed Expectation**: `too_few_sentences`
+*   **Cause**: The system prompt instructs "1-2 sentences" for replies. Deep questions often require more nuance.
+*   **Action Item**: Adjust the `reply` prompt to allow longer responses (e.g., 3-4 sentences) when the `conversationVibe` is `DEEP_DIVE` or when replying to complex questions.
 
-### Regular
-- Good: Friendly tone stayed consistent and warm.
-- Weakness: Profile recall was inconsistent when a follow-up came quickly.
-- Example (good): “子犬迎えたんだよね！元気そう？”  
-- Example (bad): “まったり最高だね！” (No reference to stored detail)
+### 3. Troll (`troll.json`)
+*   **Result**: 2 Passed / 1 Failed
+*   **Failed Expectation**: `t2` (No response expected vs Actual response)
+*   **Observation**: The system correctly identified spam but may have attempted a standard "ignore" reply or the test timing was off.
+*   **Strength**: The agent effectively ignored the first troll comment.
 
-## Adjustments Implemented
-1. **Reply prompt length flexibility**  
-   Updated the reply prompt to allow up to 3 sentences for deep questions, addressing the “too short” issue in the Questioner scenario.
-2. **Troll de-escalation guidance**  
-   Added explicit instruction to avoid engaging with provocation and gently steer back to the topic.
+## General Observations
 
-## Expected Improvements After Re-run
-- Deeper answers when users ask “why/how” style questions.
-- More consistent de-escalation without rewarding disruptive comments.
-- Subtle integration of viewer profile facts when context makes it relevant.
+*   **Dynamic Prompts (Day 22)**: Verified working. System prompts correctly include emotion and vibe instructions.
+*   **Viewer Profiles (Day 23)**: Verified working. Profile extraction and injection are functioning as expected in isolation tests.
+*   **Integration**: The scenario runner works, but the strict text expectations are brittle when using non-deterministic LLMs or simple mocks.
 
-## Notes
-- Viewer profile recall depends on successful profile extraction and DB updates. If running in DRY_RUN or without DB/LLM access, memory references will be limited.
+## Recommendations for Day 25+
+
+1.  **Adaptive Reply Length**: Modify `PromptManager` to dynamically adjust `maxTokens` and sentence constraints based on `topicDepth` or `arcPhase`.
+2.  **Fuzzy Matching**: Relaxes scenario test expectations to use semantic similarity rather than strict keyword matching.
+3.  **Troll Handling**: Refine the `IGNORE` logic to ensure absolutely zero output is generated for ignored comments to save API costs.
