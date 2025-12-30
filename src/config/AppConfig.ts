@@ -30,6 +30,7 @@ export type AppConfig = {
       maxSize: number;
       processingIntervalMs: number;
     };
+    maxCommentsPerTick: number;
     monologue: {
       intervalMs: number;
       varianceMs: number;
@@ -44,6 +45,14 @@ export type AppConfig = {
     speechDuration: {
       fallbackMinMs: number;
       perCharMs: number;
+    };
+    classifier: {
+      useLLM: boolean;
+      temperature: number;
+      maxTokens: number;
+    };
+    topicHistory: {
+      enabled: boolean;
     };
     memory: {
       consolidationMessageLimit: number;
@@ -211,6 +220,13 @@ export type AppConfig = {
     streamMemoriesLimit: number;
     viewerMemoriesLimit: number;
     shortTermLimit: number;
+    pruning: {
+      decayDays: number;
+      threshold: number;
+    };
+  };
+  character: {
+    traitCacheTtlMs: number;
   };
   llm: {
     provider: 'openai' | 'groq' | 'grok';
@@ -309,6 +325,7 @@ export const config: AppConfig = {
       maxSize: parseNumber(process.env.AGENT_COMMENT_QUEUE_MAX_SIZE, 200),
       processingIntervalMs: parseNumber(process.env.AGENT_COMMENT_PROCESSING_INTERVAL_MS, 2500)
     },
+    maxCommentsPerTick: parseNumber(process.env.AGENT_MAX_COMMENTS_PER_TICK, 6),
     monologue: {
       intervalMs: parseNumber(process.env.AGENT_MONOLOGUE_INTERVAL_MS, 10_000),
       varianceMs: parseNumber(process.env.AGENT_MONOLOGUE_VARIANCE_MS, 3_000),
@@ -323,6 +340,14 @@ export const config: AppConfig = {
     speechDuration: {
       fallbackMinMs: parseNumber(process.env.AGENT_SPEECH_FALLBACK_MIN_MS, 1_200),
       perCharMs: parseNumber(process.env.AGENT_SPEECH_PER_CHAR_MS, 90)
+    },
+    classifier: {
+      useLLM: parseBoolean(process.env.AGENT_CLASSIFIER_USE_LLM, false),
+      temperature: parseNumber(process.env.AGENT_CLASSIFIER_TEMPERATURE, 0),
+      maxTokens: parseNumber(process.env.AGENT_CLASSIFIER_MAX_TOKENS, 16)
+    },
+    topicHistory: {
+      enabled: parseBoolean(process.env.AGENT_TOPIC_HISTORY_ENABLED, true)
     },
     memory: {
       consolidationMessageLimit: parseNumber(process.env.AGENT_MEMORY_CONSOLIDATION_LIMIT, 100),
@@ -495,7 +520,14 @@ export const config: AppConfig = {
     searchLimit: parseNumber(process.env.MEMORY_SEARCH_LIMIT, 5),
     streamMemoriesLimit: parseNumber(process.env.MEMORY_STREAM_LIMIT, 10),
     viewerMemoriesLimit: parseNumber(process.env.MEMORY_VIEWER_LIMIT, 10),
-    shortTermLimit: parseNumber(process.env.MEMORY_STM_LIMIT, 25)
+    shortTermLimit: parseNumber(process.env.MEMORY_STM_LIMIT, 25),
+    pruning: {
+      decayDays: parseNumber(process.env.MEMORY_PRUNE_DECAY_DAYS, 30),
+      threshold: parseNumber(process.env.MEMORY_PRUNE_THRESHOLD, 0.3)
+    }
+  },
+  character: {
+    traitCacheTtlMs: parseNumber(process.env.CHARACTER_TRAIT_CACHE_TTL_MS, 300_000)
   },
   llm: {
     provider: (parseString(process.env.LLM_PROVIDER, 'openai') as 'openai' | 'groq' | 'grok'),

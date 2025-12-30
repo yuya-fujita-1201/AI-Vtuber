@@ -18,6 +18,31 @@ import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
 import { ChatMessage } from '../interfaces';
 
+export type FreshnessScoreInput = {
+  importance: number;
+  accessCount: number;
+  lastAccessedAt?: Date | null;
+  createdAt?: Date | null;
+};
+
+export type FreshnessScoreOptions = {
+  decayDays?: number;
+  now?: Date;
+};
+
+export const calculateFreshnessScore = (
+  memory: FreshnessScoreInput,
+  options: FreshnessScoreOptions = {}
+): number => {
+  const now = options.now ?? new Date();
+  const decayDays = Math.max(1, options.decayDays ?? config.memory.pruning.decayDays);
+  const lastAccessedAt = memory.lastAccessedAt ?? memory.createdAt ?? now;
+  const daysSinceAccess = Math.max(0, (now.getTime() - lastAccessedAt.getTime()) / (1000 * 60 * 60 * 24));
+  const baseScore = (memory.importance / 10) * Math.exp(-daysSinceAccess / decayDays);
+  const accessBoost = Math.log((memory.accessCount ?? 0) + 1) * 0.1;
+  return baseScore + accessBoost;
+};
+
 export interface AddMemoryOptions {
   content: string;
   type: MemoryType;
@@ -208,6 +233,7 @@ export class MemoryService {
           topicId,
           viewerId,
           metadata: ltmMetadata ? JSON.stringify(ltmMetadata) : undefined,
+          lastAccessedAt: new Date(),
           lastSyncedAt: new Date(),
         },
       });
@@ -221,8 +247,8 @@ export class MemoryService {
         type,
         importance,
         createdAt: memory.createdAt.toISOString(),
-        ...metadata,
-        tier: 'LTM'
+        ...ltmMetadata,
+        isArchived: false,
       };
 
       if (streamId) chromaMetadata.streamId = streamId;
@@ -313,6 +339,7 @@ export class MemoryService {
           const distance = results.distances?.[0]?.[i];
 
           if (!metadata || !document) continue;
+          if (metadata.isArchived === true) continue;
 
           // Convert distance to similarity (0-1, higher is better)
           // ChromaDB uses cosine distance, so similarity = 1 - distance
@@ -330,6 +357,10 @@ export class MemoryService {
         }
       }
 
+      if (memories.length > 0) {
+        await this.touchMemories(memories.map(memory => memory.id));
+      }
+
       logger.info(`[MemoryService] Found ${memories.length} relevant memories`);
       return memories;
     } catch (error) {
@@ -342,7 +373,7 @@ export class MemoryService {
    * Get memory by ID from Prisma
    */
   async getMemoryById(id: string) {
-    return await prisma.memory.findUnique({
+    const memory = await prisma.memory.findUnique({
       where: { id },
       include: {
         stream: true,
@@ -350,6 +381,10 @@ export class MemoryService {
         viewer: true,
       },
     });
+    if (memory) {
+      await this.touchMemories([memory.id]);
+    }
+    return memory;
   }
 
   /**
@@ -378,11 +413,40 @@ export class MemoryService {
   }
 
   /**
+   * Archive a memory (mark inactive and remove from vector store)
+   */
+  async archiveMemory(id: string): Promise<void> {
+    try {
+      const memory = await prisma.memory.findUnique({ where: { id } });
+      if (!memory) {
+        throw new Error(`Memory not found: ${id}`);
+      }
+
+      if (memory.vectorId && this.collection) {
+        await this.collection.delete({ ids: [memory.vectorId] });
+      }
+
+      await prisma.memory.update({
+        where: { id },
+        data: {
+          isArchived: true,
+          archivedAt: new Date(),
+        }
+      });
+
+      logger.info(`[MemoryService] Memory archived: ${id}`);
+    } catch (error) {
+      logger.error('[MemoryService] Failed to archive memory:', error);
+      throw new Error(`Failed to archive memory: ${error}`);
+    }
+  }
+
+  /**
    * Get recent memories from a specific stream
    */
   async getStreamMemories(streamId: string, limit: number = config.memory.streamMemoriesLimit) {
     return await prisma.memory.findMany({
-      where: { streamId },
+      where: { streamId, isArchived: false },
       orderBy: { createdAt: 'desc' },
       take: limit,
       include: {
@@ -415,7 +479,7 @@ export class MemoryService {
    */
   async getViewerMemories(viewerId: string, limit: number = config.memory.viewerMemoriesLimit) {
     return await prisma.memory.findMany({
-      where: { viewerId },
+      where: { viewerId, isArchived: false },
       orderBy: { importance: 'desc' },
       take: limit,
     });
@@ -458,6 +522,22 @@ export class MemoryService {
       prismaLtmCount,
       isInSync: count === prismaLtmCount,
     };
+  }
+
+  private async touchMemories(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const uniqueIds = Array.from(new Set(ids));
+    try {
+      await prisma.memory.updateMany({
+        where: { id: { in: uniqueIds }, isArchived: false },
+        data: {
+          lastAccessedAt: new Date(),
+          accessCount: { increment: 1 }
+        }
+      });
+    } catch (error) {
+      logger.warn('[MemoryService] Failed to update access counters', error);
+    }
   }
 
   /**

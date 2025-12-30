@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
-import { ClassificationResult, CommentType, EmotionScores, NarrativeContext } from '../interfaces';
+import { ChatMessage, ClassificationResult, CommentType, EmotionScores, NarrativeContext, TopicState } from '../interfaces';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
 import { withRetry } from '../lib/llmRetry';
@@ -147,6 +147,17 @@ export class LLMClassifierService {
       logger.warn('[LLMClassifierService] classify failed. Falling back.', error);
       return this.fallbackClassification(comment);
     }
+  }
+
+  public async classifyCommentType(comment: ChatMessage, currentTopic: TopicState): Promise<CommentType> {
+    const result = await this.classify(comment.content, { currentTopic: currentTopic.title });
+    return result.commentType;
+  }
+
+  public async identifyTopic(comment: ChatMessage, currentTopic: TopicState): Promise<string> {
+    const result = await this.classify(comment.content, { currentTopic: currentTopic.title });
+    const topic = result.topic?.trim();
+    return topic || currentTopic.title;
   }
 
   private parseClassification(text: string): ClassificationResult | null {

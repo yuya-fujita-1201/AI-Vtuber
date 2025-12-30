@@ -7,6 +7,8 @@ import { VoicevoxService } from '../services/VoicevoxService';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { PromptManager } from './PromptManager';
 import { MemoryService, MemoryType } from '../services/MemoryService';
+import { CharacterService } from '../services/CharacterService';
+import { TopicService } from '../services/TopicService';
 import { LipSyncService } from '../services/LipSyncService';
 import { ExpressionService } from '../services/ExpressionService';
 import { StageService } from '../services/StageService';
@@ -23,6 +25,8 @@ type AgentOptions = {
     ttsService?: ITTSService;
     audioPlayer?: IAudioPlayer;
     memoryService?: MemoryService;
+    characterService?: CharacterService;
+    topicService?: TopicService;
     eventEmitter?: IAgentEventEmitter;
     visualAdapter?: IVisualOutputAdapter;
     lipSyncService?: LipSyncService;
@@ -40,6 +44,8 @@ export class Agent {
     private audioPlayer: IAudioPlayer;
     private promptManager: PromptManager;
     private memoryService?: MemoryService;
+    private characterService?: CharacterService;
+    private topicService?: TopicService;
     private eventEmitter?: IAgentEventEmitter;
     private visualAdapter?: IVisualOutputAdapter;
     private lipSyncService?: LipSyncService;
@@ -104,6 +110,8 @@ export class Agent {
             ttsService = new VoicevoxService(),
             audioPlayer = new AudioPlayer(),
             memoryService,
+            characterService = new CharacterService(),
+            topicService = new TopicService(),
             eventEmitter,
             visualAdapter,
             lipSyncService,
@@ -121,6 +129,8 @@ export class Agent {
         this.tts = ttsService;
         this.audioPlayer = audioPlayer;
         this.memoryService = memoryService;
+        this.characterService = characterService;
+        this.topicService = topicService;
         this.eventEmitter = eventEmitter;
         this.visualAdapter = visualAdapter;
         this.lipSyncService = lipSyncService;
@@ -219,15 +229,15 @@ export class Agent {
 
     private async tick() {
         // 1. 新着コメント取得
-        let newMessages: ChatMessage[] = [];
+        let fetchedMessages: ChatMessage[] = [];
         try {
-            newMessages = await this.adapter.fetchNewMessages();
+            fetchedMessages = await this.adapter.fetchNewMessages();
         } catch (error) {
             this.logError('adapter.fetch', '[Agent] fetchNewMessages failed', error);
-            newMessages = [];
+            fetchedMessages = [];
         }
 
-        for (const msg of newMessages) {
+        for (const msg of fetchedMessages) {
             this.enqueueComment(msg);
         }
     }
@@ -301,7 +311,6 @@ export class Agent {
             }
             await this.processQueue();
         }
-
         this.speechWorkerRunning = false;
         logger.info('[Agent] Speech worker stopped.');
     }
@@ -373,7 +382,16 @@ export class Agent {
         const type: CommentType = classification.commentType;
 
         // Store message in database
-        await this.storeMessage(msg, type);
+        const viewerId = await this.storeMessage(msg, type);
+
+        if (config.agent.topicHistory.enabled && this.topicService) {
+            const topicName = classification.topic?.trim()
+                || this.narrativeContext?.theme
+                || this.spine.currentState.title;
+            if (topicName) {
+                await this.logTopicMention(topicName, viewerId ?? undefined);
+            }
+        }
 
         let storyUpdate: StorytellingUpdate | undefined;
         if (this.storytellingService) {
@@ -626,12 +644,33 @@ export class Agent {
                 }
             }
 
+            let characterProfile;
+            try {
+                characterProfile = this.characterService
+                    ? await this.characterService.getCharacterProfile()
+                    : undefined;
+            } catch (error) {
+                this.logError('character.profile', '[Agent] Failed to load character profile', error);
+            }
+
+            let topicHistory = null;
+            if (this.topicService && config.agent.topicHistory.enabled) {
+                try {
+                    const topicName = this.narrativeContext?.theme ?? this.spine.currentState.title;
+                    topicHistory = await this.topicService.getTopicHistory(topicName);
+                } catch (error) {
+                    this.logError('topic.history.fetch', '[Agent] Failed to load topic history', error);
+                }
+            }
+
             // Build prompt with memories integrated by PromptManager
             const prompt = this.promptManager.buildReplyPrompt(
                 msg,
                 this.spine.currentState,
                 relevantMemories,
-                this.narrativeContext
+                this.narrativeContext,
+                characterProfile,
+                topicHistory
             );
 
             const text = await this.llm.generateText(prompt);
@@ -660,7 +699,31 @@ export class Agent {
             startedAt: Date.now()
         });
         try {
-            const prompt = this.promptManager.buildMonologuePrompt(currentState, this.narrativeContext);
+            let characterProfile;
+            try {
+                characterProfile = this.characterService
+                    ? await this.characterService.getCharacterProfile()
+                    : undefined;
+            } catch (error) {
+                this.logError('character.profile', '[Agent] Failed to load character profile', error);
+            }
+
+            let topicHistory = null;
+            if (this.topicService && config.agent.topicHistory.enabled) {
+                try {
+                    const topicName = this.narrativeContext?.theme ?? currentState.title;
+                    topicHistory = await this.topicService.getTopicHistory(topicName);
+                } catch (error) {
+                    this.logError('topic.history.fetch', '[Agent] Failed to load topic history', error);
+                }
+            }
+
+            const prompt = this.promptManager.buildMonologuePrompt(
+                currentState,
+                this.narrativeContext,
+                characterProfile,
+                topicHistory
+            );
             const text = await this.llm.generateText(prompt);
             if (text.trim()) {
                 this.enqueueSpeech(text, 'NORMAL', undefined, this.currentVoiceOptions);
@@ -706,6 +769,15 @@ export class Agent {
             return this.memoryService.getShortTermMessages(this.recentCommentLimit);
         }
         return this.recentComments;
+    }
+
+    private async logTopicMention(topicName: string, viewerId?: string) {
+        if (!this.topicService) return;
+        try {
+            await this.topicService.updateTopicMention(topicName, viewerId);
+        } catch (error) {
+            this.logError('topic.history', '[Agent] Failed to update topic history', error);
+        }
     }
 
     private syncStoryTheme(theme: string, lockUntil?: number) {
@@ -807,8 +879,8 @@ export class Agent {
     /**
      * Store message in database and create memory if important
      */
-    private async storeMessage(msg: ChatMessage, type: CommentType): Promise<void> {
-        if (!this.memoryService || !this.currentStreamId) return;
+    private async storeMessage(msg: ChatMessage, type: CommentType): Promise<string | null> {
+        if (!this.memoryService || !this.currentStreamId) return null;
 
         try {
             // Find or create viewer
@@ -863,8 +935,10 @@ export class Agent {
                     },
                 });
             }
+            return viewer.id;
         } catch (error) {
             this.logError('memory.store', '[Agent] Failed to store message', error);
+            return null;
         }
     }
 
