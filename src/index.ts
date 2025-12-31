@@ -310,6 +310,7 @@ const main = async () => {
     expressionService,
     stageService: stageService ?? undefined
   });
+  webServer.setAgent(agent);
   await agent.start();
 };
 

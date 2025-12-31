@@ -9,10 +9,13 @@ import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
 import { EmotionState } from './EmotionEngine';
 import { ViewerProfileService, ViewerProfileSnapshot } from '../services/ViewerProfileService';
+import type { NewsArticle } from '../services/NewsApiService';
 
 const DEFAULT_MONOLOGUE_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n視聴者に楽しく、わかりやすく話してください。\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n- 完了したアウトライン:\n{{completedOutline}}\n- 残りのアウトライン:\n{{remainingOutline}}\n\n制約:\n- 1〜3文の自然な独り言で話す\n- 具体例や軽い感想を入れる\n- 口調は配信者らしく、明るく短め\n- 出力は本文のみ`;
 
 const DEFAULT_REPLY_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n質問でも雑談でも、リスナーコメントに対して明るく丁寧に短く返答してください。\n\n## Listener Comment\n- Author: {{commentAuthor}}\n- Comment: {{commentContent}}\n- Timestamp: {{commentTimestamp}}\n\n## Topic State\n- タイトル: {{topicTitle}}\n- 現在セクション: {{currentSection}}\n- セクション番号: {{currentSectionIndex}}\n- アウトライン:\n{{outline}}\n\n制約:\n- 1〜2文で返答（深掘り質問のときは最大3文まで）\n- 質問には簡潔に答え、雑談には相槌や共感を添える\n- 挑発・荒らしには深入りせず、落ち着いて話題を戻す\n- コメントに直接触れる\n- 出力は本文のみ`;
+
+const DEFAULT_NEWS_PROMPT = `あなたは元気で親しみやすいAI配信者「Kamee」です。\n以下のニュース一覧を短く要約し、1つだけ気になる話題に軽い感想を添えてください。\n\n制約:\n- 2〜4文で簡潔に\n- 見出しの羅列ではなく、内容をまとめる\n- 最後に「さて、本題に戻ろう」など自然に会話を戻す一言を入れる\n- 出力は本文のみ`;
 
 export type NarrativePromptInput = {
     mode: 'TWIST' | 'SUMMARY';
@@ -29,6 +32,7 @@ export type NarrativePromptInput = {
 export class PromptManager {
     private monologueTemplate: string;
     private replyTemplate: string;
+    private newsTemplate: string;
     private viewerProfileService?: ViewerProfileService;
 
     private readonly emotionPromptMap: Record<EmotionState, string> = {
@@ -49,11 +53,18 @@ export class PromptManager {
     constructor(options: { viewerProfileService?: ViewerProfileService } = {}) {
         this.monologueTemplate = this.loadTemplate('prompts/monologue.md', DEFAULT_MONOLOGUE_PROMPT);
         this.replyTemplate = this.loadTemplate('prompts/reply.md', DEFAULT_REPLY_PROMPT);
+        this.newsTemplate = this.loadTemplate('prompts/news.md', DEFAULT_NEWS_PROMPT);
         this.viewerProfileService = options.viewerProfileService;
     }
 
     public setViewerProfileService(service?: ViewerProfileService) {
         this.viewerProfileService = service;
+    }
+
+    public reloadTemplates() {
+        this.monologueTemplate = this.loadTemplate('prompts/monologue.md', DEFAULT_MONOLOGUE_PROMPT);
+        this.replyTemplate = this.loadTemplate('prompts/reply.md', DEFAULT_REPLY_PROMPT);
+        this.newsTemplate = this.loadTemplate('prompts/news.md', DEFAULT_NEWS_PROMPT);
     }
 
     public buildMonologuePrompt(
@@ -136,6 +147,46 @@ export class PromptManager {
         };
     }
 
+    public buildNewsPrompt(
+        context: TopicState,
+        articles: NewsArticle[],
+        options: {
+            query?: string;
+            narrative?: NarrativeContext;
+            characterProfile?: CharacterProfile;
+            topicHistory?: TopicHistorySummary | null;
+            emotionState?: EmotionState;
+            conversationVibe?: ConversationVibe;
+        } = {}
+    ): LLMRequest {
+        const baseTemplate = this.renderTemplate(this.newsTemplate, {
+            query: options.query ?? ''
+        });
+
+        const newsContext = this.formatNewsItems(articles, options.query);
+
+        const systemPrompt = this.buildStructuredSystemPrompt(
+            baseTemplate,
+            context,
+            [],
+            undefined,
+            options.narrative,
+            options.characterProfile,
+            options.topicHistory,
+            options.emotionState,
+            options.conversationVibe,
+            undefined,
+            newsContext
+        );
+
+        return {
+            systemPrompt,
+            userPrompt: '上のニュース情報をもとに、視聴者に伝わるよう短くまとめてください。',
+            temperature: config.prompts.reply.temperature,
+            maxTokens: config.prompts.reply.maxTokens
+        };
+    }
+
     private buildTopicReplacements(topic: TopicState): Record<string, string> {
         const outlineLines = topic.outline.map((item, index) => `${index + 1}. ${item}`);
         const completed = topic.outline.slice(0, topic.currentSectionIndex);
@@ -191,7 +242,8 @@ export class PromptManager {
         topicHistory?: TopicHistorySummary | null,
         emotionState?: EmotionState,
         conversationVibe?: ConversationVibe,
-        viewerProfileContext?: string | null
+        viewerProfileContext?: string | null,
+        newsContext?: string | null
     ): string {
         const sections: string[] = [];
 
@@ -240,6 +292,12 @@ export class PromptManager {
         }
         sections.push('');
 
+        if (newsContext) {
+            sections.push('# ニュース (NEWS)');
+            sections.push(newsContext);
+            sections.push('');
+        }
+
         // 3. MEMORIES: Retrieved relevant memories (if any)
         if (memories.length > 0) {
             sections.push('# 関連する記憶 (MEMORIES)');
@@ -274,6 +332,29 @@ export class PromptManager {
         }
 
         return sections.join('\n');
+    }
+
+    private formatNewsItems(articles: NewsArticle[], query?: string): string {
+        if (!articles.length) {
+            return '（ニュースが取得できませんでした）';
+        }
+
+        const lines: string[] = [];
+        if (query) {
+            lines.push(`検索キーワード: ${query}`);
+        }
+        lines.push('最新ニュース一覧:');
+        for (const article of articles) {
+            const parts = [
+                article.title,
+                article.source ? `(${article.source})` : '',
+                article.publishedAt ? `- ${article.publishedAt}` : ''
+            ].filter(Boolean);
+            const summary = article.description ? `: ${article.description}` : '';
+            lines.push(`- ${parts.join(' ')}${summary}`);
+        }
+        lines.push('注意: 事実確認が必要な場合は断定せずに話す。');
+        return lines.join('\n');
     }
 
     public buildNarrativePrompt(input: NarrativePromptInput, characterProfile?: CharacterProfile): LLMRequest {

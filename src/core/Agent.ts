@@ -15,6 +15,7 @@ import { StageService } from '../services/StageService';
 import { StorytellingService, StorytellingUpdate } from '../services/StorytellingService';
 import { LLMClassifierService } from '../services/LLMClassifierService';
 import { ViewerProfileService } from '../services/ViewerProfileService';
+import { NewsApiService } from '../services/NewsApiService';
 import { prisma } from '../lib/prisma';
 import { config } from '../config/AppConfig';
 import { logger } from '../lib/logger';
@@ -29,6 +30,7 @@ type AgentOptions = {
     characterService?: CharacterService;
     topicService?: TopicService;
     viewerProfileService?: ViewerProfileService;
+    newsService?: NewsApiService;
     eventEmitter?: IAgentEventEmitter;
     visualAdapter?: IVisualOutputAdapter;
     lipSyncService?: LipSyncService;
@@ -49,6 +51,7 @@ export class Agent {
     private characterService?: CharacterService;
     private topicService?: TopicService;
     private viewerProfileService?: ViewerProfileService;
+    private newsService?: NewsApiService;
     private eventEmitter?: IAgentEventEmitter;
     private visualAdapter?: IVisualOutputAdapter;
     private lipSyncService?: LipSyncService;
@@ -62,25 +65,30 @@ export class Agent {
     private emotionEngine: EmotionEngine;
     private currentVoiceOptions: TTSOptions;
     private currentEmotion: EmotionState = EmotionState.NEUTRAL;
+    private ngWords = new Map<string, number>();
+    private mutedUsers = new Map<string, number>();
+    private ngWordDefaultDurationMs = config.agent.moderation.ngWord.defaultDurationMs;
+    private ngWordMaxLength = config.agent.moderation.ngWord.maxLength;
+    private muteDefaultDurationMs = config.agent.moderation.mute.defaultDurationMs;
     private narrativeContext?: NarrativeContext;
     private recentComments: ChatMessage[] = [];
-    private readonly recentCommentLimit = config.agent.recentCommentLimit;
-    private readonly commentQueueMaxSize = config.agent.commentQueue.maxSize;
-    private readonly commentProcessingIntervalMs = config.agent.commentQueue.processingIntervalMs;
+    private recentCommentLimit = config.agent.recentCommentLimit;
+    private commentQueueMaxSize = config.agent.commentQueue.maxSize;
+    private commentProcessingIntervalMs = config.agent.commentQueue.processingIntervalMs;
 
     private isRunning: boolean = false;
     private isGeneratingMonologue: boolean = false;
     private commentWorkerRunning: boolean = false;
     private speechWorkerRunning: boolean = false;
     private lastMonologueAt: number = 0;
-    private readonly monologueIntervalMs: number = config.agent.monologue.intervalMs;
-    private readonly monologueIntervalVarianceMs: number = config.agent.monologue.varianceMs;
+    private monologueIntervalMs: number = config.agent.monologue.intervalMs;
+    private monologueIntervalVarianceMs: number = config.agent.monologue.varianceMs;
     private nextMonologueDelayMs: number;
-    private readonly preSpeechDelayMinMs: number = config.agent.preSpeechDelayMs.min;
-    private readonly preSpeechDelayMaxMs: number = config.agent.preSpeechDelayMs.max;
-    private readonly errorCooldownMs: number = config.agent.errorCooldownMs;
-    private readonly tickIntervalMs: number = config.agent.tickIntervalMs;
-    private readonly isDryRun: boolean;
+    private preSpeechDelayMinMs: number = config.agent.preSpeechDelayMs.min;
+    private preSpeechDelayMaxMs: number = config.agent.preSpeechDelayMs.max;
+    private errorCooldownMs: number = config.agent.errorCooldownMs;
+    private tickIntervalMs: number = config.agent.tickIntervalMs;
+    private isDryRun: boolean;
     private lastErrorAt: Record<string, number> = {};
     private suppressedErrors: Record<string, number> = {};
 
@@ -116,6 +124,7 @@ export class Agent {
             characterService = new CharacterService(),
             topicService = new TopicService(),
             viewerProfileService,
+            newsService,
             eventEmitter,
             visualAdapter,
             lipSyncService,
@@ -137,6 +146,7 @@ export class Agent {
         this.memoryService = memoryService;
         this.characterService = characterService;
         this.topicService = topicService;
+        this.newsService = newsService ?? new NewsApiService();
         this.eventEmitter = eventEmitter;
         this.visualAdapter = visualAdapter;
         this.lipSyncService = lipSyncService;
@@ -239,6 +249,67 @@ export class Agent {
         }
     }
 
+    public lockEmotion(state: EmotionState, durationMs?: number): void {
+        const previous = this.currentEmotion;
+        const update = this.emotionEngine.lockState(state, durationMs ?? config.emotion.lockStateDefaultMs);
+        this.applyEmotionUpdate(update, previous);
+    }
+
+    public async triggerMonologue(): Promise<void> {
+        await this.maybeGenerateMonologue(true);
+    }
+
+    public setNgWord(word: string, durationMs?: number): boolean {
+        const normalized = this.normalizeModerationWord(word);
+        if (!normalized) {
+            return false;
+        }
+
+        const duration = durationMs && durationMs > 0 ? durationMs : this.ngWordDefaultDurationMs;
+        const expiresAt = Date.now() + duration;
+        this.ngWords.set(normalized, expiresAt);
+        return true;
+    }
+
+    public muteUser(userName: string, durationMs?: number): boolean {
+        const normalized = userName.trim();
+        if (!normalized) {
+            return false;
+        }
+
+        const duration = durationMs && durationMs > 0 ? durationMs : this.muteDefaultDurationMs;
+        const expiresAt = Date.now() + duration;
+        this.mutedUsers.set(normalized.toLowerCase(), expiresAt);
+        return true;
+    }
+
+    public reloadConfig(): void {
+        this.recentCommentLimit = config.agent.recentCommentLimit;
+        this.commentQueueMaxSize = config.agent.commentQueue.maxSize;
+        this.commentProcessingIntervalMs = config.agent.commentQueue.processingIntervalMs;
+        this.monologueIntervalMs = config.agent.monologue.intervalMs;
+        this.monologueIntervalVarianceMs = config.agent.monologue.varianceMs;
+        this.preSpeechDelayMinMs = config.agent.preSpeechDelayMs.min;
+        this.preSpeechDelayMaxMs = config.agent.preSpeechDelayMs.max;
+        this.errorCooldownMs = config.agent.errorCooldownMs;
+        this.tickIntervalMs = config.agent.tickIntervalMs;
+        this.ngWordDefaultDurationMs = config.agent.moderation.ngWord.defaultDurationMs;
+        this.ngWordMaxLength = config.agent.moderation.ngWord.maxLength;
+        this.muteDefaultDurationMs = config.agent.moderation.mute.defaultDurationMs;
+        this.isDryRun = config.env.dryRun;
+
+        if (this.commentQueue.length > this.commentQueueMaxSize) {
+            this.commentQueue.splice(0, this.commentQueue.length - this.commentQueueMaxSize);
+        }
+
+        this.nextMonologueDelayMs = this.getRandomMonologueIntervalMs();
+        this.emotionEngine.reloadConfig();
+        this.currentVoiceOptions = this.emotionEngine.getVoiceSettings();
+        this.promptManager.reloadTemplates();
+        this.storytellingService?.reloadConfig();
+        this.newsService?.updateConfig();
+    }
+
     private async tick() {
         // 1. 新着コメント取得
         let fetchedMessages: ChatMessage[] = [];
@@ -336,6 +407,12 @@ export class Agent {
             return;
         }
 
+        if (this.isMutedUser(msg.authorName) || this.containsNgWord(msg.content)) {
+            await this.storeMessage(msg, CommentType.IGNORE);
+            logger.info(`[Agent] Suppressed comment from ${msg.authorName} due to moderation rules.`);
+            return;
+        }
+
         if (this.stageService) {
             const handled = await this.stageService.handleCommand(msg.content);
             if (handled) {
@@ -357,6 +434,10 @@ export class Agent {
                 }
                 return;
             }
+        }
+
+        if (await this.handleNewsCommand(msg)) {
+            return;
         }
 
         let classification: ClassificationResult;
@@ -464,6 +545,92 @@ export class Agent {
         if (responseText) {
             this.enqueueSpeech(responseText, priority, msg.id, this.currentVoiceOptions);
         }
+    }
+
+    private async handleNewsCommand(msg: ChatMessage): Promise<boolean> {
+        const request = this.parseNewsCommand(msg.content);
+        if (!request) {
+            return false;
+        }
+
+        this.emitEvent('thinking', {
+            mode: 'news',
+            commentId: msg.id,
+            authorName: msg.authorName,
+            content: msg.content,
+            startedAt: Date.now()
+        });
+
+        const fallback = '（ごめんね、今ニュースを取得できなかったみたい…）';
+        try {
+            if (!this.newsService || !config.news.apiKey) {
+                this.enqueueSpeech(fallback, 'HIGH', msg.id, this.currentVoiceOptions);
+                await this.storeMessage(msg, CommentType.ON_TOPIC);
+                return true;
+            }
+
+            const articles = await this.newsService.getTopHeadlines(request.query);
+            if (!articles.length) {
+                this.enqueueSpeech(fallback, 'HIGH', msg.id, this.currentVoiceOptions);
+                await this.storeMessage(msg, CommentType.ON_TOPIC);
+                return true;
+            }
+
+            let characterProfile;
+            try {
+                characterProfile = this.characterService
+                    ? await this.characterService.getCharacterProfile()
+                    : undefined;
+            } catch (error) {
+                this.logError('character.profile', '[Agent] Failed to load character profile', error);
+            }
+
+            const emotionState = this.emotionEngine.getCurrentState();
+            const conversationVibe = this.storytellingService?.getNarrativeContext().vibe ?? this.narrativeContext?.vibe;
+
+            const prompt = this.promptManager.buildNewsPrompt(
+                this.spine.currentState,
+                articles,
+                {
+                    query: request.query,
+                    narrative: this.narrativeContext,
+                    characterProfile,
+                    emotionState,
+                    conversationVibe
+                }
+            );
+
+            logger.info(`[Agent] LLM system prompt (news):\n${prompt.systemPrompt}`);
+            const text = await this.llm.generateText(prompt);
+            const response = text.trim() || fallback;
+            this.enqueueSpeech(response, 'HIGH', msg.id, this.currentVoiceOptions);
+            await this.storeMessage(msg, CommentType.ON_TOPIC);
+        } catch (error) {
+            this.logError('news.fetch', '[Agent] News fetch failed', error);
+            this.enqueueSpeech(fallback, 'HIGH', msg.id, this.currentVoiceOptions);
+            await this.storeMessage(msg, CommentType.ON_TOPIC);
+        }
+
+        return true;
+    }
+
+    private parseNewsCommand(content: string): { query?: string } | null {
+        const trimmed = content.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        const commandMatch = trimmed.match(/!news\s*(.*)/i);
+        if (commandMatch) {
+            const query = commandMatch[1]?.trim();
+            return { query: query || undefined };
+        }
+
+        if (/ニュース/.test(trimmed) || /news/i.test(trimmed)) {
+            return { query: undefined };
+        }
+
+        return null;
     }
 
     private enqueueSpeech(text: string, priority: 'HIGH' | 'NORMAL' | 'LOW', sourceCommentId?: string, ttsOptions?: TTSOptions) {
@@ -708,11 +875,13 @@ export class Agent {
         }
     }
 
-    private async maybeGenerateMonologue(): Promise<void> {
+    private async maybeGenerateMonologue(force: boolean = false): Promise<void> {
         if (this.isGeneratingMonologue) return;
 
-        const now = Date.now();
-        if (now - this.lastMonologueAt < this.nextMonologueDelayMs) return;
+        if (!force) {
+            const now = Date.now();
+            if (now - this.lastMonologueAt < this.nextMonologueDelayMs) return;
+        }
 
         const currentState = this.spine.currentState;
         const currentSection = currentState.outline[currentState.currentSectionIndex];
@@ -826,6 +995,61 @@ export class Agent {
             currentSectionIndex: 0,
             lockUntil: lockUntil ?? 0
         });
+    }
+
+    private normalizeModerationWord(word: string): string | null {
+        const normalized = word.trim().toLowerCase();
+        if (!normalized) {
+            return null;
+        }
+        if (normalized.length > this.ngWordMaxLength) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private isMutedUser(authorName: string): boolean {
+        this.cleanupExpiredModeration(this.mutedUsers);
+        const key = authorName.trim().toLowerCase();
+        if (!key) {
+            return false;
+        }
+        const expiresAt = this.mutedUsers.get(key);
+        if (!expiresAt) {
+            return false;
+        }
+        if (expiresAt <= Date.now()) {
+            this.mutedUsers.delete(key);
+            return false;
+        }
+        return true;
+    }
+
+    private containsNgWord(content: string): boolean {
+        this.cleanupExpiredModeration(this.ngWords);
+        const normalizedContent = content.toLowerCase();
+        for (const [word, expiresAt] of this.ngWords.entries()) {
+            if (expiresAt <= Date.now()) {
+                this.ngWords.delete(word);
+                continue;
+            }
+            if (word && normalizedContent.includes(word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private cleanupExpiredModeration(map: Map<string, number>): void {
+        if (map.size === 0) {
+            return;
+        }
+        const now = Date.now();
+        for (const [key, expiresAt] of map.entries()) {
+            if (expiresAt <= now) {
+                map.delete(key);
+            }
+        }
     }
 
     private isShortComment(content: string): boolean {
