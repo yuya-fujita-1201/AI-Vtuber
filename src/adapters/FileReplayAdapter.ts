@@ -25,7 +25,6 @@ export class FileReplayAdapter implements IChatAdapter<FileReplayAdapterConfig> 
       ? config.filePath
       : path.resolve(process.cwd(), config.filePath);
 
-    // logger.debug(`[FileReplayAdapter] Reading from: ${filePath}`);
     const raw = await fs.readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
 
