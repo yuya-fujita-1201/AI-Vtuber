@@ -1,6 +1,13 @@
 # AI-Vtuber MVP
 
-TypeScript-based MVP that connects chat input to an LLM, synthesizes speech with VOICEVOX, and plays audio output.
+TypeScript-based AI VTuber engine that connects live chat to LLM responses, synthesizes speech, and supports memory-driven prompts, moderation, and dashboard control.
+
+## Highlights
+- Multi-source chat adapters (YouTube / mock replay)
+- RDB-centric memory (Prisma + SQLite/Postgres) with optional vector search (ChromaDB)
+- Dynamic prompts (emotion, narrative vibe, topic history, viewer profiles)
+- Interactive dashboard (Socket.IO) for live controls and monitoring
+- News integration and storytelling utilities
 
 ## Setup
 1. Install dependencies
@@ -31,10 +38,20 @@ TypeScript-based MVP that connects chat input to an LLM, synthesizes speech with
    VOICEVOX_BASE_URL=http://localhost:50021
    VOICEVOX_SPEAKER_ID=1
 
-   # Audio playback (optional)
-   AUDIO_PLAYER_COMMAND=afplay
+   # Database (SQLite default)
+   DATABASE_URL="file:./dev.db"
+
+   # News API (optional)
+   NEWS_API_KEY=your_news_api_key
+
+   # ChromaDB (optional for vector memory)
+   CHROMA_URL=http://localhost:8000
    ```
-3. Start VOICEVOX Engine before running the app.
+3. Initialize the database schema
+   ```bash
+   npx prisma db push
+   ```
+4. Start VOICEVOX Engine before running the app (unless DRY_RUN=true).
 
 Notes:
 - For YouTube, provide `YOUTUBE_LIVE_CHAT_ID` or `YOUTUBE_VIDEO_ID`. If both are missing, the adapter tries to resolve the active broadcast.
@@ -51,11 +68,34 @@ Notes:
   npm start
   ```
 
+## Memory System
+- **RDB-first storage**: streams, messages, viewers, topic history, and memory entries are stored via Prisma.
+- **Vector memory (optional)**: ChromaDB provides semantic search for long-term recall; MemoryService bridges Prisma and Chroma.
+
+## Interactive Dashboard
+The web server serves a live dashboard at `http://localhost:3000/dashboard.html` (port is configurable via `PORT`).
+
+Available controls:
+- Force emotion state (temporary override)
+- Trigger monologue
+- Set NG words / mute users
+- Live subtitles and event log
+
+## Testing
+- Unit tests (Jest)
+  ```bash
+  npm test
+  ```
+- Phase 3 integration scenario
+  ```bash
+  ts-node scripts/phase3_final_test.ts
+  ```
+  Optional speed-up: `PHASE3_TIME_SCALE=60` (1 min simulated per 1 sec)
+
+- Scenario runner (JSON-driven)
+  ```bash
+  ts-node scripts/run_scenario.ts scenarios/questioner.json --dry-run
+  ```
+
 ## Architecture
-```
-Chat Adapter (YouTube / Mock)
-  -> Agent (CommentRouter + TopicSpine)
-    -> LLM (OpenAI)
-      -> TTS (VOICEVOX)
-        -> Audio Player
-```
+See `docs/architecture.md` for the full, up-to-date system overview.

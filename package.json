@@ -6,6 +6,7 @@
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "test": "jest",
     "health-check": "ts-node scripts/health-check.ts",
     "sprint1-test": "ts-node scripts/sprint1_test.ts",
     "prune-memories": "ts-node scripts/prune_memories.ts",
@@ -27,11 +28,14 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.10.2",
     "@types/socket.io": "^3.0.1",
     "@types/ws": "^8.18.1",
+    "jest": "^29.7.0",
     "prisma": "^5.19.0",
     "socket.io-client": "^4.8.3",
+    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.5.4"
   }
