@@ -31,11 +31,11 @@ type EmotionSignals = {
 export class EmotionEngine {
     private state: EmotionState = EmotionState.NEUTRAL;
     private moodScore = 0;
-    private readonly decay = config.emotion.decay;
+    private decay = config.emotion.decay;
     private overrideState?: EmotionState;
     private overrideUntil?: number;
 
-    private readonly voiceMap: Record<EmotionState, VoiceSettings> =
+    private voiceMap: Record<EmotionState, VoiceSettings> =
         config.emotion.voiceMap as Record<EmotionState, VoiceSettings>;
 
     public update(comment: string, history: string[] = [], emotionHint?: EmotionScores): EmotionUpdate {
@@ -109,6 +109,11 @@ export class EmotionEngine {
     public clearOverride(): void {
         this.overrideState = undefined;
         this.overrideUntil = undefined;
+    }
+
+    public reloadConfig(): void {
+        this.decay = config.emotion.decay;
+        this.voiceMap = config.emotion.voiceMap as Record<EmotionState, VoiceSettings>;
     }
 
     public getCurrentState(): EmotionState {

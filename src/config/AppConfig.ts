@@ -22,6 +22,7 @@ export type AppConfig = {
   server: {
     webPort: number;
     corsOrigin: string;
+    reloadSecret: string;
   };
   agent: {
     tickIntervalMs: number;
@@ -60,6 +61,15 @@ export type AppConfig = {
       consolidationMaxTokens: number;
       changeReqImportance: number;
       onTopicImportance: number;
+    };
+    moderation: {
+      ngWord: {
+        defaultDurationMs: number;
+        maxLength: number;
+      };
+      mute: {
+        defaultDurationMs: number;
+      };
     };
   };
   emotion: {
@@ -257,6 +267,13 @@ export type AppConfig = {
     defaultTemperature: number;
     defaultMaxTokens: number;
   };
+  news: {
+    apiKey: string;
+    baseUrl: string;
+    language: string;
+    maxResults: number;
+    timeoutMs: number;
+  };
 };
 
 const parseBoolean = (value: string | undefined, fallback = false): boolean => {
@@ -294,10 +311,11 @@ const parseLogLevel = (value: string | undefined, fallback: LogLevel): LogLevel 
   return fallback;
 };
 
-const rootDir = process.cwd();
-const logDir = parseString(process.env.LOG_DIR, path.join(rootDir, 'logs'));
+const buildConfig = (): AppConfig => {
+  const rootDir = process.cwd();
+  const logDir = parseString(process.env.LOG_DIR, path.join(rootDir, 'logs'));
 
-export const config: AppConfig = {
+  return {
   env: {
     nodeEnv: process.env.NODE_ENV ?? 'development',
     dryRun: parseBoolean(process.env.DRY_RUN)
@@ -316,7 +334,8 @@ export const config: AppConfig = {
   },
   server: {
     webPort: parseNumber(process.env.WEB_PORT ?? process.env.PORT, 3000),
-    corsOrigin: parseString(process.env.WEB_CORS_ORIGIN, '*')
+    corsOrigin: parseString(process.env.WEB_CORS_ORIGIN, '*'),
+    reloadSecret: parseString(process.env.RELOAD_SECRET, '')
   },
   agent: {
     tickIntervalMs: parseNumber(process.env.AGENT_TICK_INTERVAL_MS, 1000),
@@ -355,6 +374,15 @@ export const config: AppConfig = {
       consolidationMaxTokens: parseNumber(process.env.AGENT_MEMORY_CONSOLIDATION_MAX_TOKENS, 500),
       changeReqImportance: parseNumber(process.env.AGENT_MEMORY_IMPORTANCE_CHANGE_REQ, 8),
       onTopicImportance: parseNumber(process.env.AGENT_MEMORY_IMPORTANCE_ON_TOPIC, 6)
+    },
+    moderation: {
+      ngWord: {
+        defaultDurationMs: parseNumber(process.env.AGENT_NG_WORD_DEFAULT_DURATION_MS, 300_000),
+        maxLength: parseNumber(process.env.AGENT_NG_WORD_MAX_LENGTH, 40)
+      },
+      mute: {
+        defaultDurationMs: parseNumber(process.env.AGENT_MUTE_DEFAULT_DURATION_MS, 300_000)
+      }
     }
   },
   emotion: {
@@ -557,7 +585,23 @@ export const config: AppConfig = {
     defaultModel: parseString(process.env.GROQ_MODEL, 'llama3-70b-8192'),
     defaultTemperature: parseNumber(process.env.GROQ_TEMPERATURE, 0.7),
     defaultMaxTokens: parseNumber(process.env.GROQ_MAX_TOKENS, 1024)
+  },
+  news: {
+    apiKey: parseString(process.env.NEWS_API_KEY, ''),
+    baseUrl: parseString(process.env.NEWS_API_BASE_URL, 'https://newsapi.org/v2'),
+    language: parseString(process.env.NEWS_API_LANGUAGE, 'ja'),
+    maxResults: parseNumber(process.env.NEWS_API_MAX_RESULTS, 5),
+    timeoutMs: parseNumber(process.env.NEWS_API_TIMEOUT_MS, 8_000)
   }
+  };
+};
+
+export const config: AppConfig = buildConfig();
+
+export const reloadConfig = (): AppConfig => {
+  const next = buildConfig();
+  Object.assign(config, next);
+  return config;
 };
 
 export const configUtils = {

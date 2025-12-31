@@ -67,10 +67,10 @@ const STOP_WORDS = new Set([
 export class StorytellingService {
   private llm: ILLMService;
   private promptManager: PromptManager;
-  private readonly themeLockMs: number;
-  private readonly twistCooldownMs: number;
-  private readonly summaryCooldownMs: number;
-  private readonly emotionCooldownMs: number;
+  private themeLockMs: number;
+  private twistCooldownMs: number;
+  private summaryCooldownMs: number;
+  private emotionCooldownMs: number;
   private trendScores = new Map<string, number>();
   private state: StoryState;
 
@@ -101,6 +101,16 @@ export class StorytellingService {
       lastSummaryAt: 0,
       lastEmotionLockAt: 0
     };
+  }
+
+  public reloadConfig(): void {
+    this.themeLockMs = config.storytelling.theme.lockMs;
+    this.twistCooldownMs = config.storytelling.cooldowns.twistMs;
+    this.summaryCooldownMs = config.storytelling.cooldowns.summaryMs;
+    this.emotionCooldownMs = config.storytelling.cooldowns.emotionMs;
+    if (!this.state.theme) {
+      this.state.theme = config.storytelling.theme.default;
+    }
   }
 
   public getNarrativeContext(): NarrativeContext {
